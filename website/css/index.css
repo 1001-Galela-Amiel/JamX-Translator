@@ -1,0 +1,131 @@
+body {
+  background-color: #082140;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.mainheading {
+  margin-top: 50px;
+  text-align: center;
+  color: #ff00ff;
+  font-family: "Press Start 2P", cursive;
+  text-align: center;
+  font-size: 28px;
+}
+
+.support {
+  text-align: center;
+  color: #d3d3d3;
+  font-size: 18px;
+  font-weight: bold;
+  margin: 5px auto 5px auto;
+  max-width: 800px;
+  padding: 0 20px;
+  line-height: 1.5;
+  font-family: "Exo 2", sans-serif;
+}
+
+.firstButton {
+  padding: 20px 30px;
+  margin: 20px auto;
+  display: block;
+  border: 1px solid black;
+  border-radius: 0px;
+  background: lightblue;
+  color: black;
+  font-size: 18px;
+  max-height: 100px;
+}
+
+.firstButton:hover {
+  transition: all 150ms ease-in-out;
+  cursor: pointer;
+  background: white;
+  color: pink;
+}
+
+.description {
+  text-align: center;
+  background: white;
+  border: 2px solid #ccc;
+  border-radius: 25px;
+  font-style: italic;
+  font-size: 25px;
+  padding: 40px;
+  margin: 50px auto;
+  max-width: 550px;
+}
+
+.images-container {
+  width: 90%;
+  margin: 60px auto;
+  padding: 20px;
+  background-color: #ccc;
+  object-fit: cover;
+  max-width: 1200px;
+}
+
+.image-grid img {
+  max-width: 100%;
+  height: 350px;
+  object-fit: cover;
+  border-radius: 0%;
+  display: block;
+}
+
+.image-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+hr {
+  border: 1px solid #00ffff;
+  margin-top: 300px;
+}
+
+nav {
+  position: sticky;
+  top: 0;
+  background-color: #082140;
+  z-index: 900;
+  justify-content: center;
+  text-align: center;
+  padding: 25px 0;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
+  width: 100%;
+}
+
+nav a {
+  color: #0ff;
+  text-decoration: none;
+  margin: 0 20px;
+  font-family: "Exo 2", sans-serif;
+  font-size: 16px;
+  text-transform: uppercase;
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+nav a::after {
+  content: "";
+  position: absolute;
+  width: 0%;
+  height: 2px;
+  bottom: -4px;
+  left: 0;
+  background-color: #0ff;
+  transition: 0.3s;
+}
+
+nav a:hover::after {
+  width: 100%;
+}
+
+nav a:hover {
+  color: #0ff;
+  text-shadow:
+    0 0 8px #0ff,
+    0 0 15px #0ff;
+}

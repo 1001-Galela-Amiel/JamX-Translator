@@ -1,0 +1,89 @@
+body {
+  background-color: #082140;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  align-items: center;
+  width: 90%;
+}
+
+.mainheading {
+  text-align: center;
+  color: #ff00ff;
+  font-size: 20px;
+  font-family: "Press Start 2P", cursive;
+}
+
+.mac-button,
+.windows-button {
+  padding: 15px 25px;
+  margin: 10px auto;
+  display: block;
+  border: 1px solid black;
+  border-radius: 25px;
+  background: lightblue;
+  color: black;
+  font-size: 16px;
+}
+
+.mac-button:hover,
+.windows-button:hover {
+  transition: all 150ms ease-in-out;
+  cursor: pointer;
+  background: white;
+  color: pink;
+}
+
+.note {
+  text-align: center;
+  color: #d3d3d3;
+  font-size: 12px;
+  font-weight: bold;
+  margin-top: 5px;
+  max-width: 800px;
+  padding: 0 20px;
+  line-height: 1.5;
+  font-family: "Exo 2", sans-serif;
+}
+
+.download-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 30px;
+  justify-content: center;
+  width: 90%;
+  max-width: 900px;
+  min-height: 80vh;
+  border-radius: 25px;
+  margin: 50px auto;
+  padding: 50px 30px;
+  max-width: 900px;
+  background-color: rgba(26, 26, 46, 0.5);
+}
+
+.download-page1,
+.download-page2 {
+  padding: 20px 30px;
+  margin: 30px auto;
+  text-align: center;
+  border-radius: 10px;
+  max-width: 400px;
+  font-family: sans-serif;
+  background-color: rgba(26, 26, 46, 0.6);
+  line-height: 1.5;
+  box-shadow: 0 0 5px rgba(0, 255, 255, 0.4);
+}
+
+img {
+  border-radius: 40px;
+  max-height: 500px;
+  display: block;
+  margin: 0 auto;
+}
+
+.download-page.show,
+.download-page.show .download-page1,
+.download-page.show .download-page2 {
+  display: block;
+}

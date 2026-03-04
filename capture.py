@@ -1,20 +1,54 @@
+from __future__ import annotations
 
-import time
 import sys
-import numpy as np
-from PIL import Image, ImageGrab
+import time
+from typing import Optional, List, Tuple
 
-#For Windows and Mac software
+import numpy as np
+from PIL import Image
+
 WINDOWS = sys.platform.startswith("win32")
 MAC = sys.platform.startswith("darwin")
-
-#Check if its Windows, then import windows specific libraries
 if WINDOWS:
-    import win32gui, win32ui, win32con
+    import win32gui
+    import win32ui
+    import win32con
 
-_dxcam = None
+try:
+    if WINDOWS:
+        import dxcam
+        _HAS_DXCAM = True
+    else:
+        _HAS_DXCAM = False
+except Exception:
+    _HAS_DXCAM = False
+
+if MAC:
+    from Quartz import (
+        CGWindowListCopyWindowInfo,
+        CGWindowListCreateImage,
+        kCGWindowListOptionOnScreenOnly,
+        kCGNullWindowID,
+        kCGWindowListOptionIncludingWindow,
+        kCGWindowImageDefault,
+    )
+    import Quartz
+
+_dxcam_cam = None
+_dxcam_region = None
+_dxcam_last_restart = 0.0
+
+if WINDOWS:
+    def _client_rect_on_screen(hwnd: int) -> Tuple[int, int, int, int]:
+        """Client rect in screen coordinates."""
+        l, t, r, b = win32gui.GetClientRect(hwnd)
+        w = max(0, r - l)
+        h = max(0, b - t)
+        x0, y0 = win32gui.ClientToScreen(hwnd, (0, 0))
+        return (x0, y0, x0 + w, y0 + h)
 
 class WindowLister:
+    """List visible top-level windows (handle, title)."""
     @staticmethod
     def list_windows():
         """
@@ -24,10 +58,10 @@ class WindowLister:
         if WINDOWS:  
          wins = []
          def enum(hwnd, ctx):
-            """
-            Processes each window during Win32 enumeration and decides whether to keep it.
-            It checks visibility and window text, then appends suitable windows into the context list.
-            """
+             """
+             Processes each window during Win32 enumeration and decides whether to keep it.
+             It checks visibility and window text, then appends suitable windows into the context list.
+             """
             if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd):
                 wins.append((hwnd, win32gui.GetWindowText(hwnd)))
          win32gui.EnumWindows(enum, None)
@@ -35,183 +69,166 @@ class WindowLister:
          return wins
 #Check if its Mac, then import Mac specific libraries
         if MAC:
+            window_info = CGWindowListCopyWindowInfo(
+                kCGWindowListOptionOnScreenOnly,
+                kCGNullWindowID,
+            )
+            for w in window_info:
+                window_id = w.get("kCGWindowNumber")
+                owner = w.get("kCGWindowOwnerName", " ")
+                name = w.get("kCGWindowName", " ")
+                if window_id and (owner or name):
+                    windows.append((window_id, f"{owner} - {name}"))
+            return windows
+
+        return windows
+
+if WINDOWS:
+    def _ensure_dxcam(region: Tuple[int, int, int, int], target_fps: int = 60) -> None:
+        """Start/restart dxcam with a region crop (screen coords)."""
+        global _dxcam_cam, _dxcam_region, _dxcam_last_restart
+        now = time.time()
+        if _dxcam_cam is None:
+            _dxcam_cam = dxcam.create(output_idx=0, output_color="BGRA")
+            _dxcam_cam.start(target_fps=target_fps, region=region, video_mode=True)
+            _dxcam_region = region
+            _dxcam_last_restart = now
+            return
+        if _dxcam_region != region:
             try:
-                import Quartz.CoreGraphics as CG
-                #get all window info
-                options = CG.kCGWindowListOptionOnScreenOnly | CG.kCGWindowListExcludeDesktopElements
-                window_list = CG.CGWindowListCopyWindowInfo(options, CG.kCGNullWindowID)
-                result = []
-                #loop through the windows and get the id,name and title of the window
-                for window in window_list:
-                    windowid = window['kCGWindowNumber']
-                    title = window.get('kCGWindowName', '')
-                    pid = window.get('kCGWindowOwnerPID', None)
-                    #filter to keep visible windows only
-                    if title and pid:
-                        result.append((pid, title))
-                return result
+                _dxcam_cam.stop()
             except Exception:
-                print("Not installed")#used for debugging
-                return[]
-    
-        return[]
-                
+                pass
+            _dxcam_cam.start(target_fps=target_fps, region=region, video_mode=True)
+            _dxcam_region = region
+            _dxcam_last_restart = now
 
-def get_window_rect(hwnd):
-    """
-    Returns the screen coordinates of the given window handle.
-    It uses platform specific APIs to query the window rectangle and converts it into a simple tuple.
-    """
-    if not WINDOWS:
-        return None
-    try:
-        left, top, right, bottom = win32gui.GetClientRect(hwnd)
-        lt = win32gui.ClientToScreen(hwnd, (left, top))
-        rb = win32gui.ClientToScreen(hwnd, (right, bottom))
-        return (lt[0], lt[1], rb[0], rb[1])
-    except Exception:
+if WINDOWS:
+    def _dxgi_capture(hwnd: int) -> Optional[np.ndarray]:
+        """Fast path: grab latest frame from dxcam cropped to client rect region."""
+        if not _HAS_DXCAM:
+            return None
+        left, top, right, bottom = _client_rect_on_screen(hwnd)
+        if right <= left or bottom <= top:
+            return None
+        region = (left, top, right, bottom)
+        _ensure_dxcam(region, target_fps=60)
         try:
-            return win32gui.GetWindowRect(hwnd)
-        except:
+            frame = _dxcam_cam.get_latest_frame()
+            return frame
+        except Exception:
+            return None
+if WINDOWS:
+    def _gdi_capture(hwnd: int) -> Optional[np.ndarray]:
+        """
+        Robust fallback: BitBlt the CLIENT area correctly.
+        IMPORTANT: GetDC(hwnd) (client DC) => origin (0,0) is client top-left.
+        """
+        l, t, r, b = win32gui.GetClientRect(hwnd)
+        w = max(0, r - l)
+        h = max(0, b - t)
+        if w == 0 or h == 0:
             return None
 
-def _bitblt_capture(hwnd):
-    """
-    Captures the contents of a window using the Win32 GDI BitBlt method.
-    It copies pixels from the window device context into a bitmap, converts the raw data into a NumPy array, and wraps it as a PIL image.
-    """
-    rect = get_window_rect(hwnd)
-    if not rect:
-        return None
-    left, top, right, bottom = rect
-    w, h = right - left, bottom - top
-    if w <= 0 or h <= 0:
-        return None
-    hwndDC = win32gui.GetWindowDC(hwnd)
-    mfcDC  = win32ui.CreateDCFromHandle(hwndDC)
-    saveDC = mfcDC.CreateCompatibleDC()
-    saveBitMap = win32ui.CreateBitmap()
-    saveBitMap.CreateCompatibleBitmap(mfcDC, w, h)
-    saveDC.SelectObject(saveBitMap)
-    saveDC.BitBlt((0, 0), (w, h), mfcDC, (0, 0), win32con.SRCCOPY)
-
-    bmpinfo = saveBitMap.GetInfo()
-    bmpstr = saveBitMap.GetBitmapBits(True)
-
-    win32gui.DeleteObject(saveBitMap.GetHandle())
-    saveDC.DeleteDC()
-    mfcDC.DeleteDC()
-    win32gui.ReleaseDC(hwnd, hwndDC)
-
-    img = np.frombuffer(bmpstr, dtype=np.uint8)
-    img.shape = (bmpinfo['bmHeight'], bmpinfo['bmWidth'], 4)
-    rgb = img[..., [2,1,0]]
-    return Image.fromarray(rgb)
-
-def _dxgi_capture(hwnd):
-    """
-    Attempts to capture the window contents using a DXGI or dxcam based screen grabber.
-    It grabs a frame, reshapes the buffer into an image array, and converts it to a PIL image for later processing.
-    """
-    global _dxcam
-    try:
-        if _dxcam is None:
-            import dxcam
-            _dxcam = dxcam.create()
-        rect = get_window_rect(hwnd)
-        if not rect:
+        hdc_src = win32gui.GetDC(hwnd)
+        if not hdc_src:
             return None
-        left, top, right, bottom = rect
-        frame = _dxcam.grab(region=(left, top, right, bottom))
-        if frame is None:
-            return None
-        return Image.fromarray(frame[..., :3])
-    except Exception:
+
+        src_dc = None
+        mem_dc = None
+        bmp = None
+        old_obj = None
+
+        try:
+            src_dc = win32ui.CreateDCFromHandle(hdc_src)
+            mem_dc = src_dc.CreateCompatibleDC()
+
+            bmp = win32ui.CreateBitmap()
+            bmp.CreateCompatibleBitmap(src_dc, w, h)
+            old_obj = mem_dc.SelectObject(bmp)
+
+            mem_dc.BitBlt((0, 0), (w, h), src_dc, (0, 0), win32con.SRCCOPY)
+
+            raw = bmp.GetBitmapBits(True)
+            img = np.frombuffer(raw, dtype=np.uint8).reshape((h, w, 4))  # BGRA
+            return img.copy()
+        finally:
+            if mem_dc is not None and old_obj is not None:
+                try:
+                    mem_dc.SelectObject(old_obj)
+                except Exception:
+                    pass
+            if bmp is not None:
+                try:
+                    win32gui.DeleteObject(bmp.GetHandle())
+                except Exception:
+                    pass
+            if mem_dc is not None:
+                try:
+                    mem_dc.DeleteDC()
+                except Exception:
+                    pass
+            if src_dc is not None:
+                try:
+                    src_dc.DeleteDC()
+                except Exception:
+                    pass
+            try:
+                win32gui.ReleaseDC(hwnd, hdc_src)
+            except Exception:
+                pass
+
+def _mac_capture_rgba(hwnd: int) -> Optional[np.ndarray]:
+    if not MAC:
+        return None
+    image_ref = CGWindowListCreateImage(
+        Quartz.CGRectNull,
+        kCGWindowListOptionIncludingWindow,
+        hwnd,
+        kCGWindowImageDefault,
+    )
+    if image_ref is None:
         return None
 
-def _looks_invalid(pil_img):
-    """
-    Heuristically checks whether a captured image is obviously invalid.
-    It inspects the size and color distribution of the image and returns True when the data likely does not represent a real frame.
-    """
-    try:
-        arr = np.asarray(pil_img)
-        if arr.size == 0:
-            return True
-        v = float(arr.var())
-        if v < 50:
-            return True
-        return False
-    except Exception:
-        return True
-    
-#capture helper for Mac
-def _mac_capture_window(window_id = None):
-    """
-    Captures a specific macOS window using Quartz APIs.
-    It calls CoreGraphics to create an image for the window, copies the pixel buffer into a NumPy array, and converts it into a PIL RGBA image.
-    """
-    try:
-        import Quartz.CoreGraphics as CG
-        #after importing the right libraries, capture an image of the window of your choice
-        imageCap = CG.CGWindowListCreateImage(
-            CG.CGRectNull,
-            CG.CGRectInfinite,
-            CG.kCGWindowListOptionIncludingWindow,
-            window_id,
-            CG.kCGWindowImageDefault
-        )
-        #return none if it fails
-        if not imageCap:
-            return None
-        #get width, height, and data(pixel info) from the captured image
-        width = CG.CGImageGetWidth(imageCap)
-        height = CG.CGImageGetHeight(imageCap)
-        data = CG.CGDataProviderCopyData(CG.CGImageGetDataProvider((imageCap)))
-        
-        #create a pil image from the raw data
-        img = Image.frombuffer(
-            "RGBA", 
-            (width, height), 
-            data, 
-            "raw", 
-            "BGRA",
-            0, 1
-        )
-        # Convert to RGB
-        img = img.convert("RGB")
-        return img
-    except Exception:
-        #if any error occurs during the whole process, return none
+    width = Quartz.CGImageGetWidth(image_ref)
+    height = Quartz.CGImageGetHeight(image_ref)
+    pixel_data = Quartz.CGDataProviderCopyData(
+        Quartz.CGImageGetDataProvider(image_ref)
+    )
+    arr = np.frombuffer(pixel_data, dtype=np.uint8)
+    if arr.size < width * height * 4:
         return None
-    
-    
-def capture_window_image(hwnd):
-    """
-    Captures an image of the target window using the best method available for the current platform.
-    On Windows it tries BitBlt and DXGI, on macOS it uses Quartz, and it returns the first valid PIL image or None if all methods fail.
-    """
+    arr = arr[: width * height * 4]
+    return arr.reshape((height, width, 4))
+
+def capture_window_bgra(hwnd: int) -> Optional[np.ndarray]:
+    """Return BGRA frame as numpy array."""
     if WINDOWS:
-        img = _bitblt_capture(hwnd)
-        if img is not None and not _looks_invalid(img):
-            return img
-        img2 = _dxgi_capture(hwnd)
-        if img2 is not None and not _looks_invalid(img2):
-            return img2
-        return img or img2
+        frame = _dxgi_capture(hwnd)
+        if frame is not None:
+            return frame
+        return _gdi_capture(hwnd)
 
     if MAC:
-        #capture window using the mac capture function
-        img = _mac_capture_window(window_id=hwnd)
-        #return the image if the capture is successful
-        if img is not None and not _looks_invalid(img):
-            return img
-        
-        #capture the whole screen if window capture fails
-        try:
-            img2 = ImageGrab.grab()
-            return img2
-        except Exception: 
+        rgba = _mac_capture_rgba(hwnd)
+        if rgba is None:
             return None
-        
+        r = rgba[..., 0]
+        g = rgba[..., 1]
+        b = rgba[..., 2]
+        a = rgba[..., 3]
+        return np.dstack([b, g, r, a]).astype(np.uint8)
+
     return None
+
+def capture_window_image(hwnd: int) -> Optional[Image.Image]:
+    """Compatibility API: Return PIL Image (RGB)."""
+    frame = capture_window_bgra(hwnd)
+    if frame is None:
+        return None
+    # BGRA -> RGB
+    b = frame[..., 0]
+    g = frame[..., 1]
+    r = frame[..., 2]
+    rgb = np.dstack([r, g, b]).astype(np.uint8)
+    return Image.fromarray(rgb, mode="RGB")

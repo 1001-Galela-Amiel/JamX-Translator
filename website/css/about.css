@@ -1,0 +1,186 @@
+
+      body {
+        background-color: #082140;
+        max-width: 100%;
+      }
+
+      .mainheading {
+        text-align: center;
+        color: #00ffff;
+        font-size: 33px;
+        margin-top: 80px;
+        margin-bottom: 10px;
+        font-family: "Audiowide", cursive;
+        position: sticky;
+      }
+
+      .subheading {
+        text-align: center;
+        color: white;
+        font-size: 16px;
+        margin-top: 40px;
+        margin-bottom: 10px;
+        font-family: "Audiowide", cursive;
+      }
+
+      .subheading1 {
+        text-align: center;
+        color: white;
+        font-size: 16px;
+        margin-top: 10px;
+        margin-bottom: 50px;
+        font-family: "Audiowide", cursive;
+      }
+
+      .description {
+        color: #d3d3d3;
+        font-size: 18px;
+        font-weight: bold;
+        margin: 20px auto 0 auto;
+        max-width: 800px;
+        padding: 0 20px;
+        line-height: 1.5;
+        font-family: "Exo 2", sans-serif;
+      }
+
+      .description-container {
+        justify-content: center;
+        background-color: #1a1a2e;
+        border-radius: 25px;
+        margin: 50px auto;
+        padding: 30px 20px;
+        max-width: 900px;
+        margin-top: 50px;
+      }
+
+      .description-container p {
+        margin-bottom: 50px;
+      }
+
+      .description-container h3 {
+        margin-top: 50px;
+        text-align: center;
+        color: #ff00ff;
+        font-family: "Press Start 2P", cursive;
+        text-align: center;
+        font-size: 28px;
+      }
+
+      button {
+        padding: 15px 25px;
+        margin: 30px auto;
+        display: block;
+        border: 1px solid black;
+        border-radius: 35px;
+        background: white;
+        color: black;
+        font-size: 18px;
+        max-height: 100px;
+        font-weight: bold;
+        font-family: "Russo One", sans-serif;
+      }
+
+      button:hover {
+        transition: all 150ms ease-in-out;
+        cursor: pointer;
+        background: black;
+        color: #ff00ff;
+      }
+
+      .heading {
+        color: white;
+        text-align: center;
+      }
+
+      .team-members {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        margin-top: 15px;
+        gap: 20px;
+      }
+
+      .member {
+        text-align: center;
+      }
+
+      .member img {
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        object-fit: cover;
+        margin-top: 0px;
+      }
+
+      .team-members a {
+        color: #00ffff;
+        font-size: 8px;
+        margin-top: 10px;
+        font-family: "Press Start 2P", cursive;
+      }
+
+      a:hover {
+        color: #ff00ff;
+      }
+
+      .resources {
+        text-align: center;
+        text-decoration: underline;
+        color: #00ffff;
+        font-size: 16px;
+        margin-top: 50px auto;
+        margin-bottom: 30px;
+        font-family: "Press Start 2P", cursive;
+        line-height: 1.5;
+      }
+
+      .grid {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 40px;
+      }
+
+      .grid p {
+        text-align: center;
+        color: #d3d3d3;
+        font-weight: bold;
+        margin-top: 10px;
+        font-family: "Exo 2", sans-serif;
+      }
+
+      .grid img {
+        width: 80px;
+        height: 80px;
+        object-fit: cover;
+        border-radius: 50%;
+        display: block;
+      }
+
+      .description-container img:hover {
+        transform: scale(1.2);
+        transition: all 150ms ease-in-out;
+        cursor: pointer;
+      }
+
+      footer {
+        text-align: right;
+        color: rgb(16, 15, 15);
+        font-size: 12px;
+        font-family: "Exo 2", sans-serif;
+      }
+
+      hr {
+        border: 1px solid #00ffff;
+        margin-top: 300px;
+      }
+
+      .team-number {
+        text-align: center;
+        color: white;
+        font-size: 16px;
+        margin-top: 50px;
+        margin-bottom: 10px;
+        font-family: "Audiowide", cursive;
+      }
+ 
