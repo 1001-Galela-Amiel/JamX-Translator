@@ -132,13 +132,19 @@ if WINDOWS:
         hdc_src = win32gui.GetDC(hwnd)
         if not hdc_src:
             return None
+
+        src_dc = None
+        mem_dc = None
+        bmp = None
+        old_obj = None
+
         try:
             src_dc = win32ui.CreateDCFromHandle(hdc_src)
             mem_dc = src_dc.CreateCompatibleDC()
 
             bmp = win32ui.CreateBitmap()
             bmp.CreateCompatibleBitmap(src_dc, w, h)
-            mem_dc.SelectObject(bmp)
+            old_obj = mem_dc.SelectObject(bmp)
 
             mem_dc.BitBlt((0, 0), (w, h), src_dc, (0, 0), win32con.SRCCOPY)
 
@@ -146,6 +152,26 @@ if WINDOWS:
             img = np.frombuffer(raw, dtype=np.uint8).reshape((h, w, 4))  # BGRA
             return img.copy()
         finally:
+            if mem_dc is not None and old_obj is not None:
+                try:
+                    mem_dc.SelectObject(old_obj)
+                except Exception:
+                    pass
+            if bmp is not None:
+                try:
+                    win32gui.DeleteObject(bmp.GetHandle())
+                except Exception:
+                    pass
+            if mem_dc is not None:
+                try:
+                    mem_dc.DeleteDC()
+                except Exception:
+                    pass
+            if src_dc is not None:
+                try:
+                    src_dc.DeleteDC()
+                except Exception:
+                    pass
             try:
                 win32gui.ReleaseDC(hwnd, hdc_src)
             except Exception:

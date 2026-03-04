@@ -13,6 +13,7 @@ import os
 import sys
 import json
 import time
+from difflib import SequenceMatcher
 from typing import List, Dict, Any, Optional
 
 from PySide6 import QtWidgets, QtCore, QtGui
@@ -45,47 +46,79 @@ HOOK_CODEPAGE_MAP = {
 
 
 class CaptureWorker(QtCore.QThread):
-    """Background thread that captures frames and runs OCR periodically."""
+    """Background thread that captures frames continuously."""
 
     frame_ready = QtCore.Signal(object)
-    ocr_ready = QtCore.Signal(list)
-    prefer_lang: str = "auto"
 
     def __init__(
         self,
         hwnd: int,
         interval_ms: int = 120,
-        ocr_every_ms: int = 1200,
-        enable_ocr: bool = True,
         parent: Optional[QtCore.QObject] = None,
     ) -> None:
         super().__init__(parent)
         self.hwnd = hwnd
         self.interval = max(5, int(interval_ms)) / 1000.0
-        self.ocr_interval = max(100, int(ocr_every_ms)) / 1000.0
-        self.enable_ocr = enable_ocr
         self._running = False
 
     def run(self) -> None:
         self._running = True
-        last_ocr = 0.0
         while self._running:
             start = time.time()
             bgra = capture_window_bgra(self.hwnd)
             if bgra is not None:
                 self.frame_ready.emit(bgra)
-                if self.enable_ocr and (start - last_ocr) >= self.ocr_interval:
-                    try:
-                        pil_img = capture_window_image(self.hwnd)
-                        if pil_img is None:
-                            raise RuntimeError("OCR capture failed")
-                        data = ocr_image_data(pil_img, self.prefer_lang)
-                        self.ocr_ready.emit(data)
-                    except Exception as e:
-                        print("[OCR ERROR]", e)
-                    last_ocr = start
             dt = time.time() - start
             sleep_t = self.interval - dt
+            if sleep_t > 0:
+                time.sleep(sleep_t)
+
+    def stop(self) -> None:
+        self._running = False
+        self.wait(2000)
+
+
+class OCRWorker(QtCore.QThread):
+    """Background thread that periodically captures image and runs OCR."""
+
+    ocr_ready = QtCore.Signal(list)
+
+    def __init__(
+        self,
+        hwnd: int,
+        ocr_every_ms: int = 1200,
+        prefer_lang: str = "auto",
+        parent: Optional[QtCore.QObject] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.hwnd = hwnd
+        self.ocr_interval = max(100, int(ocr_every_ms)) / 1000.0
+        self.prefer_lang = prefer_lang
+        self._running = False
+        self._last_error_message: str = ""
+        self._last_error_ts: float = 0.0
+
+    def run(self) -> None:
+        self._running = True
+        while self._running:
+            start = time.time()
+            try:
+                pil_img = capture_window_image(self.hwnd)
+                if pil_img is not None:
+                    data = ocr_image_data(pil_img, self.prefer_lang)
+                    self.ocr_ready.emit(data)
+            except Exception as e:
+                msg = str(e)
+                now = time.time()
+                if msg != self._last_error_message or (now - self._last_error_ts) >= 2.0:
+                    print("[OCR ERROR]", e)
+                    self._last_error_message = msg
+                    self._last_error_ts = now
+                if "CreateCompatibleDC failed" in msg:
+                    time.sleep(0.2)
+
+            dt = time.time() - start
+            sleep_t = self.ocr_interval - dt
             if sleep_t > 0:
                 time.sleep(sleep_t)
 
@@ -150,6 +183,12 @@ class PreviewWidget(QtWidgets.QWidget):
 
     def set_selected_bbox(self, bbox: Optional[tuple[int, int, int, int]]) -> None:
         self.selected_bbox = bbox
+        self.update()
+
+    def reset_view(self) -> None:
+        self.qimage = None
+        self.overlay_entries = []
+        self.selected_bbox = None
         self.update()
 
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:
@@ -230,6 +269,16 @@ class PreviewWidget(QtWidgets.QWidget):
         painter.end()
 
 
+class WindowComboBox(QtWidgets.QComboBox):
+    """Combo box that emits a signal right before the popup is shown."""
+
+    popup_about_to_show = QtCore.Signal()
+
+    def showPopup(self) -> None:
+        self.popup_about_to_show.emit()
+        super().showPopup()
+
+
 class MainWindow(QtWidgets.QWidget):
     """Main application window."""
 
@@ -245,12 +294,18 @@ class MainWindow(QtWidgets.QWidget):
         self.translator = Translator()
         self.translator.translation_ready.connect(self.on_translation_ready)
         self.translation_cache: Dict[str, str] = {}
+        self.pending_translation_keys: set[str] = set()
 
         self.worker: Optional[CaptureWorker] = None
+        self.ocr_worker: Optional[OCRWorker] = None
         self.hook_worker: Optional[QtCore.QThread] = None
         self.attached_hwnd: Optional[int] = None
         self.ocr_results: List[Dict[str, Any]] = []
         self.latest_ocr: List[Dict[str, Any]] = []
+        self._active_text_signature: Optional[tuple[str, ...]] = None
+        self._last_text_switch_ts: float = 0.0
+        self._text_switch_lock_ms: int = 220
+        self._text_similarity_threshold: float = 0.30
         self.selected_bbox: Optional[tuple[int, int, int, int]] = None
 
         root = QtWidgets.QHBoxLayout(self)
@@ -260,12 +315,12 @@ class MainWindow(QtWidgets.QWidget):
         root.addLayout(right_col, 1)
 
         bar = QtWidgets.QHBoxLayout()
-        self.win_list = QtWidgets.QComboBox()
-        self.refresh_btn = QtWidgets.QPushButton("Refresh Windows")
+        self.win_list = WindowComboBox()
         self.attach_btn = QtWidgets.QPushButton("Attach")
+        self.detach_btn = QtWidgets.QPushButton("Detach")
         bar.addWidget(self.win_list)
-        bar.addWidget(self.refresh_btn)
         bar.addWidget(self.attach_btn)
+        bar.addWidget(self.detach_btn)
         left_col.addLayout(bar)
 
         self.tabs = QtWidgets.QTabWidget()
@@ -357,8 +412,9 @@ class MainWindow(QtWidgets.QWidget):
         btn_row.addWidget(self.help_btn)
         right_col.addLayout(btn_row)
 
-        self.refresh_btn.clicked.connect(self.refresh_windows)
+        self.win_list.popup_about_to_show.connect(self.refresh_windows)
         self.attach_btn.clicked.connect(self.attach_window)
+        self.detach_btn.clicked.connect(self.detach_window)
         self.interval_spin.valueChanged.connect(self.on_interval_changed)
         self.ocr_spin.valueChanged.connect(self.on_interval_changed)
         self.apply_btn.clicked.connect(self.apply_translation)
@@ -371,16 +427,27 @@ class MainWindow(QtWidgets.QWidget):
 
     # ---------------------- Window and attach logic ----------------------
     def refresh_windows(self) -> None:
+        previous_hwnd = self.current_hwnd()
+        if previous_hwnd is None:
+            previous_hwnd = self.attached_hwnd
+
         self.win_list.clear()
         try:
             wins = WindowLister.list_windows()
         except Exception as e:
             self.status.setText(f"Failed to list windows: {e}")
             return
+
+        selected_index = -1
         for hwnd, title in wins:
             if not title:
                 continue
             self.win_list.addItem(title, userData=hwnd)
+            if previous_hwnd is not None and hwnd == previous_hwnd:
+                selected_index = self.win_list.count() - 1
+
+        if selected_index >= 0:
+            self.win_list.setCurrentIndex(selected_index)
         self.status.setText(f"Found {self.win_list.count()} windows.")
 
     def current_hwnd(self) -> Optional[int]:
@@ -405,6 +472,26 @@ class MainWindow(QtWidgets.QWidget):
             self.stop_capture()
             self.status.setText(f"Attached hook to window: {current_title}")
 
+    def detach_window(self) -> None:
+        self.stop_capture()
+        self.stop_hook()
+        self.attached_hwnd = None
+        self.reset_ui_on_detach()
+        self.status.setText("Detached from window.")
+
+    def reset_ui_on_detach(self) -> None:
+        self.latest_ocr = []
+        self.ocr_results = []
+        self._active_text_signature = None
+        self._last_text_switch_ts = 0.0
+        self.pending_translation_keys.clear()
+        self.selected_bbox = None
+        self.preview.reset_view()
+        self.table.setRowCount(0)
+        self.edit.clear()
+        self.inject_log.clear()
+        self.tabs.setCurrentIndex(0)
+
     # ---------------------- Capture / OCR handling ----------------------
     def start_capture(self) -> None:
         if not self.attached_hwnd:
@@ -413,13 +500,17 @@ class MainWindow(QtWidgets.QWidget):
         self.worker = CaptureWorker(
             self.attached_hwnd,
             interval_ms=self.interval_spin.value(),
-            ocr_every_ms=self.ocr_spin.value(),
-            enable_ocr=True,
         )
-        self.worker.prefer_lang = self.src_combo.currentData()
         self.worker.frame_ready.connect(self.on_frame_ready)
-        self.worker.ocr_ready.connect(self.on_ocr_ready)
         self.worker.start()
+
+        self.ocr_worker = OCRWorker(
+            self.attached_hwnd,
+            ocr_every_ms=self.ocr_spin.value(),
+            prefer_lang=self.src_combo.currentData(),
+        )
+        self.ocr_worker.ocr_ready.connect(self.on_ocr_ready)
+        self.ocr_worker.start()
 
     def stop_capture(self) -> None:
         if self.worker:
@@ -428,6 +519,12 @@ class MainWindow(QtWidgets.QWidget):
             except Exception:
                 pass
             self.worker = None
+        if self.ocr_worker:
+            try:
+                self.ocr_worker.stop()
+            except Exception:
+                pass
+            self.ocr_worker = None
 
     def on_frame_ready(self, frame_bgra) -> None:
         overlay = []
@@ -436,18 +533,54 @@ class MainWindow(QtWidgets.QWidget):
         for e in self.latest_ocr:
             txt = e.get("text") or ""
             key = f"{src_lang}|{dst_lang}|{txt}"
-            trans = self.translation_cache.get(key, txt)
-            if txt.strip() and key not in self.translation_cache:
+            trans = self.translation_cache.get(key)
+            if txt.strip() and key not in self.translation_cache and key not in self.pending_translation_keys:
                 self.translate_signal.emit(src_lang, dst_lang, txt)
-            overlay.append({"text": txt, "bbox": e.get("bbox"), "translation": trans})
+            if trans:
+                overlay.append({"text": txt, "bbox": e.get("bbox"), "translation": trans})
         self.preview.update_overlay(overlay)
         self.preview.update_frame(frame_bgra)
 
     def on_ocr_ready(self, entries: List[Dict[str, Any]]) -> None:
-        self.latest_ocr = entries
+        normalized_entries: List[Dict[str, Any]] = []
+        for e in entries:
+            txt = (e.get("text") or "").strip()
+            if not txt:
+                continue
+            normalized_entries.append({
+                "text": txt,
+                "bbox": e.get("bbox"),
+                "lang": e.get("lang", "unknown"),
+            })
+
+        text_signature = tuple(e["text"] for e in normalized_entries)
+
+        if text_signature == self._active_text_signature:
+            return
+
+        if self._active_text_signature is not None:
+            current_text = "\n".join(self._active_text_signature)
+            incoming_text = "\n".join(text_signature)
+            similarity = SequenceMatcher(None, current_text, incoming_text).ratio()
+            if similarity >= self._text_similarity_threshold:
+                return
+
+        now = time.time()
+        if self._active_text_signature is not None:
+            elapsed_ms = (now - self._last_text_switch_ts) * 1000.0
+            if elapsed_ms < self._text_switch_lock_ms:
+                return
+
+        if not normalized_entries:
+            return
+
+        self._active_text_signature = text_signature
+        self._last_text_switch_ts = now
+        self.latest_ocr = normalized_entries
+
         self.ocr_results = []
         self.table.setRowCount(0)
-        for e in entries:
+        for e in normalized_entries:
             src_text = e.get("text", "")
             row = self.table.rowCount()
             self.table.insertRow(row)
@@ -559,13 +692,14 @@ class MainWindow(QtWidgets.QWidget):
         if not text:
             return
         key = f"{src}|{dst}|{text}"
-        if key in self.translation_cache:
+        if key in self.translation_cache or key in self.pending_translation_keys:
             return
-        self.translation_cache[key] = text
+        self.pending_translation_keys.add(key)
         self.translator.translate_async(src, dst, text, tag={"type": "auto"})
 
     def on_translation_ready(self, src: str, dst: str, text: str, trans: str, tag: Any) -> None:
         key = f"{src}|{dst}|{text}"
+        self.pending_translation_keys.discard(key)
         self.translation_cache[key] = trans
 
         if tag:
@@ -592,7 +726,9 @@ class MainWindow(QtWidgets.QWidget):
             for e in self.latest_ocr:
                 txt = e.get("text") or ""
                 key = f"{src_lang}|{dst_lang}|{txt}"
-                overlay.append({"text": txt, "bbox": e.get("bbox"), "translation": self.translation_cache.get(key, txt)})
+                trans_text = self.translation_cache.get(key)
+                if trans_text:
+                    overlay.append({"text": txt, "bbox": e.get("bbox"), "translation": trans_text})
             self.preview.update_overlay(overlay)
         except Exception:
             pass
@@ -625,20 +761,21 @@ class MainWindow(QtWidgets.QWidget):
             self.preview.setTextColor(color)
 
     def on_src_lang_changed(self) -> None:
-        if self.worker:
-            self.worker.prefer_lang = self.src_combo.currentData()
+        if self.ocr_worker:
+            self.ocr_worker.prefer_lang = self.src_combo.currentData()
 
     def show_help(self) -> None:
         msg = (
             "<b>Game Translation Tool (OCR & Injection)</b><br><br>"
             "<b>Workflow:</b><br>"
-            "1. Use <i>Refresh Windows</i> to populate the list of open windows.<br>"
+            "1. Click the window dropdown to auto-refresh and list open windows.<br>"
             "2. Select a game window.<br>"
             "3. Choose either the OCR or Injection tab.<br>"
             "   - In OCR mode: Click <i>Attach</i> to start live capture, OCR and overlay translation.<br>"
             "   - In Injection mode: Click <i>Attach</i> to start the injection backend (if configured).<br>"
-            "4. Use the language selectors to choose source and target languages.<br>"
-            "5. Click table rows to edit translations manually, then click <i>Apply</i> and"
+            "4. Click <i>Detach</i> to stop OCR/hook and release the current window.<br>"
+            "5. Use the language selectors to choose source and target languages.<br>"
+            "6. Click table rows to edit translations manually, then click <i>Apply</i> and"
             "   <i>Save</i> to persist them.<br>"
             "<br>"
             "Note: The injection mode depends on LunaHook from LunaTranslator. Ensure the"
