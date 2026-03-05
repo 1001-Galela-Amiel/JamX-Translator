@@ -50,24 +50,23 @@ if WINDOWS:
 class WindowLister:
     """List visible top-level windows (handle, title)."""
     @staticmethod
-    def list_windows():
-        """
-        Lists visible top level windows that can be targeted by the tool.
-        It calls the platform specific enumeration routine and collects window handles and titles into a list.
-        """
-        if WINDOWS:  
-         wins = []
-         def enum(hwnd, ctx):
-             """
-             Processes each window during Win32 enumeration and decides whether to keep it.
-             It checks visibility and window text, then appends suitable windows into the context list.
-             """
-            if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd):
-                wins.append((hwnd, win32gui.GetWindowText(hwnd)))
-         win32gui.EnumWindows(enum, None)
-         wins.sort(key=lambda x: x[1].lower())
-         return wins
-#Check if its Mac, then import Mac specific libraries
+    def list_windows() -> List[Tuple[int, str]]:
+        windows: List[Tuple[int, str]] = []
+
+        if WINDOWS:
+            def enum_cb(h, _):
+                if not win32gui.IsWindowVisible(h):
+                    return
+                title = win32gui.GetWindowText(h) or ""
+                title = title.strip()
+                if not title:
+                    return
+                if title in ("Program Manager",):
+                    return
+                windows.append((h, title))
+
+            win32gui.EnumWindows(enum_cb, None)
+            return windows
         if MAC:
             window_info = CGWindowListCopyWindowInfo(
                 kCGWindowListOptionOnScreenOnly,
