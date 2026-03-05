@@ -129,49 +129,49 @@ class OCRWorker(QtCore.QThread):
 
 class PreviewWidget(QtWidgets.QWidget):
     """Renders the captured game frame with translated overlays."""
-
+    
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
-        super().__init__(parent)
-        self.qimage: Optional[QtGui.QImage] = None
-        self.overlay_entries: List[Dict[str, Any]] = []
-        self.selected_bbox: Optional[tuple[int, int, int, int]] = None
-        self.text_overlay_color = QtGui.QColor(255, 255, 0)
-        self.setMinimumSize(480, 270)
-        self.setStyleSheet("background-color: #202225; border-radius: 8px;")
+            super().__init__(parent)
+            self.qimage: Optional[QtGui.QImage] = None
+            self.overlay_entries: List[Dict[str, Any]] = []
+            self.selected_bbox: Optional[tuple[int, int, int, int]] = None
+            self.text_overlay_color = QtGui.QColor(255, 255, 0)
+            self.setMinimumSize(480, 270)
+            self.setStyleSheet("background-color: #202225; border-radius: 8px;")
 
     def sizeHint(self) -> QtCore.QSize:
         return QtCore.QSize(640, 360)
-
+    
     def update_frame(self, frame_bgra) -> None:
-        if frame_bgra is None:
-            return
-        try:
-            import numpy as np
-            if not isinstance(frame_bgra, np.ndarray) or frame_bgra.ndim != 3 or frame_bgra.shape[2] != 4:
-                try:
-                    pil_img = frame_bgra.convert("RGBA")
-                    w, h = pil_img.size
-                    buf = pil_img.tobytes("raw", "BGRA")
-                    self._qimage_buf = buf
-                    self.qimage = QtGui.QImage(self._qimage_buf, w, h, 4 * w, QtGui.QImage.Format.Format_ARGB32)
-                    self.update()
-                    return
-                except Exception:
-                    return
+            if frame_bgra is None:
+                return
+            try:
+                import numpy as np
+                if not isinstance(frame_bgra, np.ndarray) or frame_bgra.ndim != 3 or frame_bgra.shape[2] != 4:
+                    try:
+                        pil_img = frame_bgra.convert("RGBA")
+                        w, h = pil_img.size
+                        buf = pil_img.tobytes("raw", "BGRA")
+                        self._qimage_buf = buf
+                        self.qimage = QtGui.QImage(self._qimage_buf, w, h, 4 * w, QtGui.QImage.Format.Format_ARGB32)
+                        self.update()
+                        return
+                    except Exception:
+                        return
 
-            h, w, _ = frame_bgra.shape
-            if not frame_bgra.flags["C_CONTIGUOUS"]:
-                frame_bgra = np.ascontiguousarray(frame_bgra)
-            if frame_bgra.shape[2] == 4:
-                amax = int(frame_bgra[..., 3].max())
-                if amax == 0:
-                    frame_bgra = frame_bgra.copy()
-                    frame_bgra[..., 3] = 255
-            self._qimage_buf = frame_bgra.tobytes()
-            self.qimage = QtGui.QImage(self._qimage_buf, w, h, 4 * w, QtGui.QImage.Format.Format_ARGB32)
-            self.update()
-        except Exception:
-            return
+                h, w, _ = frame_bgra.shape
+                if not frame_bgra.flags["C_CONTIGUOUS"]:
+                    frame_bgra = np.ascontiguousarray(frame_bgra)
+                if frame_bgra.shape[2] == 4:
+                    amax = int(frame_bgra[..., 3].max())
+                    if amax == 0:
+                        frame_bgra = frame_bgra.copy()
+                        frame_bgra[..., 3] = 255
+                self._qimage_buf = frame_bgra.tobytes()
+                self.qimage = QtGui.QImage(self._qimage_buf, w, h, 4 * w, QtGui.QImage.Format.Format_ARGB32)
+                self.update()
+            except Exception:
+                return
 
     def update_overlay(self, entries: List[Dict[str, Any]]) -> None:
         self.overlay_entries = entries or []
@@ -184,6 +184,7 @@ class PreviewWidget(QtWidgets.QWidget):
     def set_selected_bbox(self, bbox: Optional[tuple[int, int, int, int]]) -> None:
         self.selected_bbox = bbox
         self.update()
+<<<<<<< HEAD
 
     def reset_view(self) -> None:
         self.qimage = None
@@ -191,79 +192,83 @@ class PreviewWidget(QtWidgets.QWidget):
         self.selected_bbox = None
         self.update()
 
+=======
+             
+>>>>>>> 004f9d8 (got rid of frida, edited the subtitle display and overlay, and website)
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
 
         tgt_rect = self.rect()
 
+        # Background Reset color
+        painter.fillRect(tgt_rect, QtGui.QColor(32, 34, 37))
+
+        #Capture frame and draw
         if self.qimage is not None and not self.qimage.isNull():
             src_w, src_h = self.qimage.width(), self.qimage.height()
-            if src_w > 0 and src_h > 0:
-                scale = min(tgt_rect.width() / src_w, tgt_rect.height() / src_h)
-                draw_w = int(src_w * scale)
-                draw_h = int(src_h * scale)
-                offset_x = (tgt_rect.width() - draw_w) // 2
-                offset_y = (tgt_rect.height() - draw_h) // 2
-                self._draw_rect = QtCore.QRect(offset_x, offset_y, draw_w, draw_h)
-            else:
-                self._draw_rect = tgt_rect
-            painter.drawImage(self._draw_rect, self.qimage, self.qimage.rect())
+            scale = min(tgt_rect.width() / src_w, tgt_rect.height() / src_h)
+            draw_w, draw_h = int(src_w * scale), int(src_h * scale)
+            offset_x, offset_y = (tgt_rect.width() - draw_w) // 2, (tgt_rect.height() - draw_h) // 2
+            draw_rect = QtCore.QRect(offset_x, offset_y, draw_w, draw_h)
+            painter.drawImage(draw_rect, self.qimage, self.qimage.rect())
         else:
-            self._draw_rect = tgt_rect
-            painter.fillRect(self.rect(), QtGui.QColor(32, 34, 37))
-
-        if self.qimage is None or self.qimage.isNull():
-            painter.end()
-            return
-
-        draw_rect = getattr(self, "_draw_rect", tgt_rect)
-        src_w, src_h = self.qimage.width(), self.qimage.height()
-        scale_x = draw_rect.width() / max(1, src_w)
-        scale_y = draw_rect.height() / max(1, src_h)
-        off_x = draw_rect.left()
-        off_y = draw_rect.top()
-
-        if self.selected_bbox:
-            x, y, w, h = self.selected_bbox
-            tx = int(x * scale_x) + off_x
-            ty = int(y * scale_y) + off_y
-            tw = int(w * scale_x)
-            th = int(h * scale_y)
-            painter.setPen(QtGui.QPen(QtGui.QColor(0, 255, 0), 2))
-            painter.drawRect(tx, ty, tw, th)
+            draw_rect = tgt_rect
 
         if not self.overlay_entries:
             painter.end()
             return
 
-        painter.setPen(self.text_overlay_color)
-        font = painter.font()
-        font.setPointSize(max(font.pointSize(), 10))
-        painter.setFont(font)
-        metrics = QtGui.QFontMetrics(font)
-
-        max_w = int(draw_rect.width() * 0.6)
-
-        for e in self.overlay_entries:
-            bbox = e.get("bbox")
-            text = e.get("translation") or e.get("text") or ""
-            if not bbox or not text:
+        #Merge lines for subtitle-style overlay
+        lines = []
+        y_threshold = 15
+        for e in sorted(self.overlay_entries, key=lambda x: x.get('bbox', (0,0,0,0))[1]):
+            text = e.get('translation') or e.get('text')
+            if not text:
                 continue
-            x, y, w, h = bbox
-            tx = int(x * scale_x) + off_x
-            ty = int(y * scale_y) + off_y
-            rect = metrics.boundingRect(0, 0, max_w, 1000, QtCore.Qt.AlignLeft | QtCore.Qt.TextWordWrap, text)
-            box_w = rect.width() + 12
-            box_h = rect.height() + 12
-            painter.setPen(QtCore.Qt.NoPen)
-            painter.setBrush(QtGui.QColor(0, 0, 0, 160))
-            painter.drawRect(QtCore.QRect(tx, ty, box_w, box_h))
-            painter.setPen(self.text_overlay_color)
+            x, y, w, h = e.get('bbox', (0,0,0,0))
+            placed = False
+            for line in lines:
+                if abs(y - line['y']) <= y_threshold:
+                    line['text'] += " " + text
+                    line['y'] = min(line['y'], y)
+                    line['h'] = max(line['h'], y + h - line['y'])
+                    placed = True
+                    break
+            if not placed:
+                lines.append({'text': text, 'y': y, 'h': h})
+
+       #Subtitle overlay position logic
+        painter.setFont(QtGui.QFont("Helvetica", 14))
+        metrics = QtGui.QFontMetrics(painter.font())
+        line_height = metrics.lineSpacing()
+
+        # Find bottom of all OCR boxes
+        bottom_y = max([line['y'] + line['h'] for line in lines])
+        vertical_padding = 100  
+
+        overlay_x = draw_rect.left() + 10
+        overlay_y = draw_rect.top() + int(bottom_y * scale) + vertical_padding
+
+        overlay_width = int(draw_rect.width() * 0.8)
+        overlay_height = line_height * len(lines) + 8
+
+        # Ensure the overlay doesn't go beyond the bottom of the widget
+        if overlay_y + overlay_height > draw_rect.bottom():
+            overlay_y = draw_rect.bottom() - overlay_height - 5
+
+        #Semi-transparent background for text
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QColor(0, 0, 0, 180))
+        painter.drawRect(overlay_x - 4, overlay_y - 4, overlay_width + 8, overlay_height + 8)
+
+        #Text overlay/lines
+        painter.setPen(self.text_overlay_color)
+        for i, line in enumerate(lines):
             painter.drawText(
-                QtCore.QRect(tx + 6, ty + 6, rect.width(), rect.height()),
-                QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop | QtCore.Qt.TextWordWrap,
-                text,
+                QtCore.QRect(overlay_x, overlay_y + i * line_height, overlay_width, line_height),
+                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                line['text']
             )
 
         painter.end()

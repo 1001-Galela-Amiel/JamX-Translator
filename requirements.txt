@@ -4,7 +4,6 @@ pillow
 pywin32
 mss
 dxcam
-frida
 argostranslate
 rapidocr-onnxruntime
 onnxruntime==1.17.3

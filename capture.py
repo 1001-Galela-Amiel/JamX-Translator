@@ -1,97 +1,41 @@
 from __future__ import annotations
-
 import sys
-import time
 from typing import Optional, List, Tuple
-
 import numpy as np
 from PIL import Image
 
 WINDOWS = sys.platform.startswith("win32")
 MAC = sys.platform.startswith("darwin")
+
+# ------------------ Windows imports ------------------
 if WINDOWS:
     import win32gui
     import win32ui
     import win32con
+    import dxcam
+    from PIL import ImageGrab
 
-try:
-    if WINDOWS:
-        import dxcam
-        _HAS_DXCAM = True
-    else:
-        _HAS_DXCAM = False
-except Exception:
-    _HAS_DXCAM = False
-
+# ------------------ macOS imports ------------------
 if MAC:
-    from Quartz import (
-        CGWindowListCopyWindowInfo,
-        CGWindowListCreateImage,
-        kCGWindowListOptionOnScreenOnly,
-        kCGNullWindowID,
-        kCGWindowListOptionIncludingWindow,
-        kCGWindowImageDefault,
-    )
     import Quartz
 
-_dxcam_cam = None
-_dxcam_region = None
-_dxcam_last_restart = 0.0
-
+# ------------------ Windows helpers ------------------
 if WINDOWS:
     def _client_rect_on_screen(hwnd: int) -> Tuple[int, int, int, int]:
-        """Client rect in screen coordinates."""
         l, t, r, b = win32gui.GetClientRect(hwnd)
-        w = max(0, r - l)
-        h = max(0, b - t)
+        w, h = max(0, r - l), max(0, b - t)
         x0, y0 = win32gui.ClientToScreen(hwnd, (0, 0))
         return (x0, y0, x0 + w, y0 + h)
 
-class WindowLister:
-    """List visible top-level windows (handle, title)."""
-    @staticmethod
-    def list_windows() -> List[Tuple[int, str]]:
-        windows: List[Tuple[int, str]] = []
+    _dxcam_cam = None
+    _dxcam_region = None
 
-        if WINDOWS:
-            def enum_cb(h, _):
-                if not win32gui.IsWindowVisible(h):
-                    return
-                title = win32gui.GetWindowText(h) or ""
-                title = title.strip()
-                if not title:
-                    return
-                if title in ("Program Manager",):
-                    return
-                windows.append((h, title))
-
-            win32gui.EnumWindows(enum_cb, None)
-            return windows
-        if MAC:
-            window_info = CGWindowListCopyWindowInfo(
-                kCGWindowListOptionOnScreenOnly,
-                kCGNullWindowID,
-            )
-            for w in window_info:
-                window_id = w.get("kCGWindowNumber")
-                owner = w.get("kCGWindowOwnerName", " ")
-                name = w.get("kCGWindowName", " ")
-                if window_id and (owner or name):
-                    windows.append((window_id, f"{owner} - {name}"))
-            return windows
-
-        return windows
-
-if WINDOWS:
-    def _ensure_dxcam(region: Tuple[int, int, int, int], target_fps: int = 60) -> None:
-        """Start/restart dxcam with a region crop (screen coords)."""
-        global _dxcam_cam, _dxcam_region, _dxcam_last_restart
-        now = time.time()
+    def _ensure_dxcam(region: Tuple[int, int, int, int], target_fps: int = 60):
+        global _dxcam_cam, _dxcam_region
         if _dxcam_cam is None:
             _dxcam_cam = dxcam.create(output_idx=0, output_color="BGRA")
             _dxcam_cam.start(target_fps=target_fps, region=region, video_mode=True)
             _dxcam_region = region
-            _dxcam_last_restart = now
             return
         if _dxcam_region != region:
             try:
@@ -100,32 +44,20 @@ if WINDOWS:
                 pass
             _dxcam_cam.start(target_fps=target_fps, region=region, video_mode=True)
             _dxcam_region = region
-            _dxcam_last_restart = now
 
-if WINDOWS:
     def _dxgi_capture(hwnd: int) -> Optional[np.ndarray]:
-        """Fast path: grab latest frame from dxcam cropped to client rect region."""
-        if not _HAS_DXCAM:
-            return None
         left, top, right, bottom = _client_rect_on_screen(hwnd)
         if right <= left or bottom <= top:
             return None
-        region = (left, top, right, bottom)
-        _ensure_dxcam(region, target_fps=60)
+        _ensure_dxcam((left, top, right, bottom))
         try:
-            frame = _dxcam_cam.get_latest_frame()
-            return frame
+            return _dxcam_cam.get_latest_frame()
         except Exception:
             return None
-if WINDOWS:
+
     def _gdi_capture(hwnd: int) -> Optional[np.ndarray]:
-        """
-        Robust fallback: BitBlt the CLIENT area correctly.
-        IMPORTANT: GetDC(hwnd) (client DC) => origin (0,0) is client top-left.
-        """
         l, t, r, b = win32gui.GetClientRect(hwnd)
-        w = max(0, r - l)
-        h = max(0, b - t)
+        w, h = max(0, r - l), max(0, b - t)
         if w == 0 or h == 0:
             return None
 
@@ -141,13 +73,15 @@ if WINDOWS:
         try:
             src_dc = win32ui.CreateDCFromHandle(hdc_src)
             mem_dc = src_dc.CreateCompatibleDC()
-
             bmp = win32ui.CreateBitmap()
             bmp.CreateCompatibleBitmap(src_dc, w, h)
+<<<<<<< HEAD
             old_obj = mem_dc.SelectObject(bmp)
 
+=======
+            mem_dc.SelectObject(bmp)
+>>>>>>> 004f9d8 (got rid of frida, edited the subtitle display and overlay, and website)
             mem_dc.BitBlt((0, 0), (w, h), src_dc, (0, 0), win32con.SRCCOPY)
-
             raw = bmp.GetBitmapBits(True)
             img = np.frombuffer(raw, dtype=np.uint8).reshape((h, w, 4))  # BGRA
             return img.copy()
@@ -177,29 +111,37 @@ if WINDOWS:
             except Exception:
                 pass
 
-def _mac_capture_rgba(hwnd: int) -> Optional[np.ndarray]:
-    if not MAC:
-        return None
-    image_ref = CGWindowListCreateImage(
-        Quartz.CGRectNull,
-        kCGWindowListOptionIncludingWindow,
-        hwnd,
-        kCGWindowImageDefault,
-    )
-    if image_ref is None:
-        return None
+# ------------------ Window Lister ------------------
+class WindowLister:
+    @staticmethod
+    def list_windows() -> List[Tuple[int, str]]:
+        windows: List[Tuple[int, str]] = []
 
-    width = Quartz.CGImageGetWidth(image_ref)
-    height = Quartz.CGImageGetHeight(image_ref)
-    pixel_data = Quartz.CGDataProviderCopyData(
-        Quartz.CGImageGetDataProvider(image_ref)
-    )
-    arr = np.frombuffer(pixel_data, dtype=np.uint8)
-    if arr.size < width * height * 4:
-        return None
-    arr = arr[: width * height * 4]
-    return arr.reshape((height, width, 4))
+        if WINDOWS:
+            def enum_cb(h, _):
+                if not win32gui.IsWindowVisible(h):
+                    return
+                title = win32gui.GetWindowText(h) or ""
+                if title.strip() and title not in ("Program Manager",):
+                    windows.append((h, title))
+            win32gui.EnumWindows(enum_cb, None)
+            return windows
 
+        if MAC:
+            window_info = Quartz.CGWindowListCopyWindowInfo(
+                Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
+            )
+            for w in window_info:
+                window_id = w.get("kCGWindowNumber")
+                owner = w.get("kCGWindowOwnerName", " ")
+                name = w.get("kCGWindowName", " ")
+                if window_id and (owner or name):
+                    windows.append((window_id, f"{owner} - {name}"))
+            return windows
+
+        return []
+
+# ------------------ Capture functions ------------------
 def capture_window_bgra(hwnd: int) -> Optional[np.ndarray]:
     """Return BGRA frame as numpy array."""
     if WINDOWS:
@@ -209,25 +151,27 @@ def capture_window_bgra(hwnd: int) -> Optional[np.ndarray]:
         return _gdi_capture(hwnd)
 
     if MAC:
-        rgba = _mac_capture_rgba(hwnd)
-        if rgba is None:
+        from mac_capture import capture_window_image  # use new Mac live capture
+        img = capture_window_image(hwnd)
+        if img is None:
             return None
-        r = rgba[..., 0]
-        g = rgba[..., 1]
-        b = rgba[..., 2]
-        a = rgba[..., 3]
-        return np.dstack([b, g, r, a]).astype(np.uint8)
+        arr = np.array(img)
+        if arr.shape[2] == 3:
+            b, g, r = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+            a = np.full_like(b, 255)
+            arr = np.dstack([b, g, r, a])
+        elif arr.shape[2] == 4:
+            b, g, r, a = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2], arr[:, :, 3]
+            arr = np.dstack([b, g, r, a])
+        return arr.astype(np.uint8)
 
     return None
 
 def capture_window_image(hwnd: int) -> Optional[Image.Image]:
-    """Compatibility API: Return PIL Image (RGB)."""
+    """Return a PIL Image (RGB)."""
     frame = capture_window_bgra(hwnd)
     if frame is None:
         return None
-    # BGRA -> RGB
-    b = frame[..., 0]
-    g = frame[..., 1]
-    r = frame[..., 2]
+    b, g, r = frame[:, :, 0], frame[:, :, 1], frame[:, :, 2]
     rgb = np.dstack([r, g, b]).astype(np.uint8)
     return Image.fromarray(rgb, mode="RGB")

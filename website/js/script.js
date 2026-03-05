@@ -1,10 +1,11 @@
+function goToDownloadpage() {
+  window.location.href = "download.html";
+}
+
 function displayGithub() {
   window.location.href =
     "https://github.com/JohnnieM-CS426/GameTranslationTool";
 }
-
-let inviteButton = document.querySelector("button");
-inviteButton.addEventListener("click", displayGithub);
 
 function displayDownloadPage() {
   let download = document.querySelector(".download-page");
@@ -18,6 +19,12 @@ function displayDownloadPage() {
   document.body.innerHTML = "";
   document.body.appendChild(download);
 }
+
+let downloadButton2 = document.querySelector(".firstButton");
+downloadButton2.addEventListener("click", goToDownloadpage);
+
+let githubButton = document.querySelector(".mac-button, .windows-button");
+githubButton.addEventListener("click", displayGithub);
+
 let downloadButton = document.querySelector(".firstButton");
 downloadButton.addEventListener("click", displayDownloadPage);
-
