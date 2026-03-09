@@ -22,6 +22,7 @@ from capture import WindowLister, capture_window_image, capture_window_bgra
 from ocr_backend import ocr_image_data
 from translate_backend import LANG_MAP
 from translation_worker import Translator
+from snipper import Snipper
 
 try:
     from luna_worker import LunaHookWorker
@@ -184,17 +185,7 @@ class PreviewWidget(QtWidgets.QWidget):
     def set_selected_bbox(self, bbox: Optional[tuple[int, int, int, int]]) -> None:
         self.selected_bbox = bbox
         self.update()
-<<<<<<< HEAD
-
-    def reset_view(self) -> None:
-        self.qimage = None
-        self.overlay_entries = []
-        self.selected_bbox = None
-        self.update()
-
-=======
              
->>>>>>> 004f9d8 (got rid of frida, edited the subtitle display and overlay, and website)
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
@@ -346,12 +337,19 @@ class MainWindow(QtWidgets.QWidget):
         self.ocr_spin = QtWidgets.QSpinBox()
         self.ocr_spin.setRange(100, 5000)
         self.ocr_spin.setValue(300)
+        self.manual_ocr_button = QtWidgets.QPushButton("Manual OCR")
+        self.manual_ocr_button.clicked.connect(self.start_snip)
         ctrl.addWidget(QtWidgets.QLabel("Frame (ms)"))
         ctrl.addWidget(self.interval_spin)
         ctrl.addSpacing(20)
         ctrl.addWidget(QtWidgets.QLabel("OCR (ms)"))
         ctrl.addWidget(self.ocr_spin)
         ctrl.addStretch(1)
+        ctrl.addWidget(self.manual_ocr_button)
+
+        snip_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F1"), self)
+        snip_shortcut.activated.connect(self.start_snip)
+        
         ocr_layout.addLayout(ctrl)
 
         inj_layout = QtWidgets.QVBoxLayout(self.inj_tab)
@@ -604,6 +602,10 @@ class MainWindow(QtWidgets.QWidget):
                 "lang": e.get("lang", "unknown"),
                 "translation": "",
             })
+    
+    def start_snip(self):
+        self.snipper= Snipper()
+        self.snipper.show()
 
     # ---------------------- Hook handling ----------------------
     def start_hook(self) -> None:

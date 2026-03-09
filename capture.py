@@ -75,12 +75,7 @@ if WINDOWS:
             mem_dc = src_dc.CreateCompatibleDC()
             bmp = win32ui.CreateBitmap()
             bmp.CreateCompatibleBitmap(src_dc, w, h)
-<<<<<<< HEAD
-            old_obj = mem_dc.SelectObject(bmp)
-
-=======
             mem_dc.SelectObject(bmp)
->>>>>>> 004f9d8 (got rid of frida, edited the subtitle display and overlay, and website)
             mem_dc.BitBlt((0, 0), (w, h), src_dc, (0, 0), win32con.SRCCOPY)
             raw = bmp.GetBitmapBits(True)
             img = np.frombuffer(raw, dtype=np.uint8).reshape((h, w, 4))  # BGRA
