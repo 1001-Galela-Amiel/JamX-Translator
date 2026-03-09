@@ -605,7 +605,12 @@ class MainWindow(QtWidgets.QWidget):
     
     def start_snip(self):
         self.snipper= Snipper()
+        self.snipper.image_captured.connect(self.on_snip)
         self.snipper.show()
+
+    def on_snip(self, img):
+        self.data = ocr_image_data(img, self.src_combo.currentData())
+        self.on_ocr_ready(self.data)
 
     # ---------------------- Hook handling ----------------------
     def start_hook(self) -> None:

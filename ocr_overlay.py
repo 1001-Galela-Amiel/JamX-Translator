@@ -4,6 +4,7 @@ import numpy as np
 import win32gui, win32ui, win32con
 import ctypes
 from PySide6 import QtWidgets, QtCore, QtGui
+import pytesseract
 
 
 class WindowLister:

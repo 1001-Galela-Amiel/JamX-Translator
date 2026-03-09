@@ -1,12 +1,11 @@
-"""File for creating "snipper" function, used for manual OCR through QT (probably better ways, but this is the one I saw first)"""
-
-import sys
+"""File for creating an in-program "snipper" function, used for manual OCR via QT (probably better ways, but seemed most convenient with current structure)"""
 import mss
 from PySide6 import QtWidgets, QtCore
 from PIL import Image
-
 class Snipper(QtWidgets.QWidget):
+    image_captured = QtCore.Signal(object)
     def __init__(self):
+
         super().__init__()
         self.setWindowFlags(QtCore.Qt.WindowType.FramelessWindowHint 
                             | QtCore.Qt.WindowType.WindowStaysOnTopHint)
@@ -37,4 +36,4 @@ class Snipper(QtWidgets.QWidget):
             screenshot = sct.grab(monitor)
             img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
             img.save("snip.png")
-            print("Saved to snip.png")
+            self.image_captured.emit(img)
