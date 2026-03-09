@@ -826,6 +826,14 @@ class MainWindow(QtWidgets.QWidget):
             if trans_item:
                 self.display_signal.emit(trans_item.text())
 
+    def update_last_row_translation(self, text: str) -> None:
+        last_row = self.table.rowCount() - 1
+        if last_row >= 0:
+            # Ensure no accidental loop occurs (text edited -> table changed -> change text -> change table, etc.)
+            self.table.blockSignals(True)
+            self.table.setItem(last_row, 2, QtWidgets.QTableWidgetItem(text))
+            self.table.blockSignals(False)
+
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self.display_window.close()
         self.stop_capture()
@@ -839,17 +847,25 @@ class MainWindow(QtWidgets.QWidget):
 class DisplayWindow(QtWidgets.QWidget):
     '''Window that displays most recent translation text for overlay over a game'''
     '''Takes text from latest translation from main window's table (latest row, column 3 of main window's table)'''
+    
+    """For allowing editability of display window"""
+    text_edited_signal = QtCore.Signal(str)
+        
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Display Window")
-        self.resize(400,200)
+        self.resize(600,300)
         self.setWindowFlags(
             QtCore.Qt.WindowType.WindowStaysOnTopHint |
             QtCore.Qt.WindowType.FramelessWindowHint
         )
-        self.label = QtWidgets.QLabel("Latest translation text will be displayed here once extracted\nDrag box with left click\nResize box by dragging bottom-right corner\nRight-click to alter settings or close this window", self)
+
+        """Using TextEdit to allow for ability to edit text within box"""
+        self.label = QtWidgets.QTextEdit("Latest translation text will be displayed here once extracted\nDrag at edges with left click\nResize box by dragging bottom-right corner\nRight-click to alter settings or close this window\nPress F1 to activate Manual OCR", self)
         self.label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
-        self.label.setWordWrap(True)
+        self.label.setFrameStyle(0)
+        self.label.setReadOnly(True)
+        self.label.setWordWrapMode(QtGui.QTextOption.WrapMode.WordWrap)
 
         layout = QtWidgets.QVBoxLayout()
         layout.addWidget(self.label)
@@ -876,10 +892,16 @@ class DisplayWindow(QtWidgets.QWidget):
         font.setFamily("Arial")
         font.setPointSize(16)
         self.label.setFont(font)
-        self.label.setStyleSheet("color: black;")
-        
+        self.label.setStyleSheet("background-color: transparent;")
+        self.label.viewport().setStyleSheet("background-color: transparent;")
+        self.label.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
 
-    '''Functions to allow movement and resizing of display window (since frameless and transparent, seems to be necessary)'''
+        self.label.setMouseTracking(True)
+        self.label.installEventFilter(self)
+        
+        self.label.textChanged.connect(lambda: self.text_edited_signal.emit(self.label.toPlainText()))
+
+    """Functions to allow movement and resizing of display window (since frameless and transparent, seems to be necessary)"""
     def _is_in_resize_zone(self, pos) -> bool:
         return(
             pos.x() >= self.width() - self.resize_margin or
@@ -926,7 +948,7 @@ class DisplayWindow(QtWidgets.QWidget):
         self.settings_window.show()
 
     def changed_text(self, text: str) -> None:
-        self.label.setText(text)
+        self.label.setPlainText(text)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -965,6 +987,7 @@ class SettingsWindow(QtWidgets.QWidget):
         self.original_bg_color = QtGui.QColor(target.bg_color)
         self.original_bg_alpha = target.bg_alpha
         self.original_alignment = target.label.alignment()
+        self.original_editable = not target.label.isReadOnly()
         
         layout = QtWidgets.QVBoxLayout()
 
@@ -1022,6 +1045,11 @@ class SettingsWindow(QtWidgets.QWidget):
         layout.addWidget(align_label)
         layout.addWidget(self.align_combo)
 
+        """Editability for Display Window"""
+        self.editable_checkbox = QtWidgets.QCheckBox("Allow text editing")
+        self.editable_checkbox.setChecked(not target.label.isReadOnly())
+        self.editable_checkbox.stateChanged.connect(self._on_editable_changed)
+        layout.addWidget(self.editable_checkbox)
         layout.addStretch()
 
         """For saving or cancelling current settings"""
@@ -1093,6 +1121,9 @@ class SettingsWindow(QtWidgets.QWidget):
         }
         self.target.label.setAlignment(alignments[text])
     
+    def _on_editable_changed(self, state: int) -> None:
+        self.target.label.setReadOnly(state != QtCore.Qt.CheckState.Checked.value)
+
     """Functions for saving and cancelling settings"""
     def on_save(self) -> None:
         self.original_font = QtGui.QFont(self.target.label.font())
@@ -1100,6 +1131,7 @@ class SettingsWindow(QtWidgets.QWidget):
         self.original_bg_color = QtGui.QColor(self.target.bg_color)
         self.original_bg_alpha = self.target.bg_alpha
         self.original_alignment = self.target.label.alignment()
+        self.original_editable = not self.target.label.isReadOnly()
         self.close()
 
     def on_cancel(self) -> None:
@@ -1109,6 +1141,7 @@ class SettingsWindow(QtWidgets.QWidget):
         self.target.bg_alpha = self.original_bg_alpha
         self.target.update_background()
         self.target.label.setAlignment(self.original_alignment)
+        self.target.label.setReadOnly(not self.original_editable)
         self.close()
 
     def closeEvent(self, event) -> None:
@@ -1150,6 +1183,7 @@ def main() -> None:
     win2 = DisplayWindow()
     win = MainWindow(win2)
     win.display_signal.connect(win2.changed_text)
+    win2.text_edited_signal.connect(win.update_last_row_translation)
     win.show()
     win2.show()
     sys.exit(app.exec())
