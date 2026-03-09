@@ -629,6 +629,7 @@ class MainWindow(QtWidgets.QWidget):
         self.snipper.show()
 
     def on_snip(self, img):
+
         data, processed_img = ocr_image_data(img, self.src_combo.currentData())
         self.on_ocr_ready(data)
         self.image_window = ImageWindow(img, processed_img)
@@ -861,7 +862,8 @@ class DisplayWindow(QtWidgets.QWidget):
         )
 
         """Using TextEdit to allow for ability to edit text within box"""
-        self.label = QtWidgets.QTextEdit("Latest translation text will be displayed here once extracted\nDrag at edges with left click\nResize box by dragging bottom-right corner\nRight-click to alter settings or close this window\nPress F1 to activate Manual OCR", self)
+        self.label = QtWidgets.QTextEdit(self)
+        self.label.setText("Latest translation text will be displayed here once extracted\nDrag at edges with left click\nResize box by dragging bottom-right corner\nRight-click to alter settings or close this window\nPress F1 to activate Manual OCR")
         self.label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
         self.label.setFrameStyle(0)
         self.label.setReadOnly(True)
