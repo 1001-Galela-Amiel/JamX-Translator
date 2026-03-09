@@ -15,6 +15,7 @@ import json
 import time
 from difflib import SequenceMatcher
 from typing import List, Dict, Any, Optional
+from pynput import keyboard
 
 from PySide6 import QtWidgets, QtCore, QtGui
 
@@ -127,6 +128,18 @@ class OCRWorker(QtCore.QThread):
         self._running = False
         self.wait(2000)
 
+
+class ShortcutWorker(QtCore.QObject):
+    """Background thread for detecting keyboard presses for shortcut key purposes"""
+    pressed = QtCore.Signal()
+
+    def run(self):
+        def on_press(key):
+            if key == keyboard.Key.f1:
+                self.pressed.emit()
+
+        with keyboard.Listener(on_press=on_press) as listener:
+            listener.join()
 
 class PreviewWidget(QtWidgets.QWidget):
     """Renders the captured game frame with translated overlays."""
@@ -427,6 +440,13 @@ class MainWindow(QtWidgets.QWidget):
         self.src_combo.currentIndexChanged.connect(self.on_src_lang_changed)
 
         self.table.itemChanged.connect(self.display_window_update)
+
+        self.shortcut_thread = QtCore.QThread()
+        self.shortcut_worker = ShortcutWorker()
+        self.shortcut_worker.moveToThread(self.shortcut_thread)
+        self.shortcut_worker.pressed.connect(self.start_snip)
+        self.shortcut_thread.started.connect(self.shortcut_worker.run)
+        self.shortcut_thread.start()
 
         self.refresh_windows()
 
