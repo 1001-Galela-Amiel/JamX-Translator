@@ -1,6 +1,7 @@
 ﻿import numpy as np
 from PIL import Image
 import Quartz
+from Quartz import CGWindowListCreateImage, kCGWindowImageBoundsIgnoreFraming, kCGWindowListOptionIncludingWindow, CGRectNull, CGImageGetWidth, CGImageGetHeight, CGImageGetDataProvider, CGDataProviderCopyData
 
 def capture_screen():
     """Capture full screen using Quartz."""
@@ -23,8 +24,6 @@ def capture_screen():
 
 def capture_window_image(hwnd: int) -> Image.Image:
     """Capture a specific window using Quartz."""
-    from Quartz import CGWindowListCreateImage, kCGWindowImageBoundsIgnoreFraming, kCGWindowListOptionIncludingWindow, CGRectNull, CGImageGetWidth, CGImageGetHeight, CGImageGetDataProvider, CGDataProviderCopyData
-
     image_ref = CGWindowListCreateImage(
         CGRectNull,
         kCGWindowListOptionIncludingWindow,

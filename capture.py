@@ -75,15 +75,15 @@ if WINDOWS:
             mem_dc = src_dc.CreateCompatibleDC()
             bmp = win32ui.CreateBitmap()
             bmp.CreateCompatibleBitmap(src_dc, w, h)
-<<<<<<< HEAD
+
             old_obj = mem_dc.SelectObject(bmp)
 
-=======
+
             mem_dc.SelectObject(bmp)
->>>>>>> 004f9d8 (got rid of frida, edited the subtitle display and overlay, and website)
+
             mem_dc.BitBlt((0, 0), (w, h), src_dc, (0, 0), win32con.SRCCOPY)
             raw = bmp.GetBitmapBits(True)
-            img = np.frombuffer(raw, dtype=np.uint8).reshape((h, w, 4))  # BGRA
+            img = np.frombuffer(raw, dtype=np.uint8).reshape((h, w, 4)) 
             return img.copy()
         finally:
             if mem_dc is not None and old_obj is not None:
@@ -151,7 +151,7 @@ def capture_window_bgra(hwnd: int) -> Optional[np.ndarray]:
         return _gdi_capture(hwnd)
 
     if MAC:
-        from mac_capture import capture_window_image  # use new Mac live capture
+        from mac_capture import capture_window_image 
         img = capture_window_image(hwnd)
         if img is None:
             return None

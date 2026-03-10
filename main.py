@@ -184,7 +184,7 @@ class PreviewWidget(QtWidgets.QWidget):
     def set_selected_bbox(self, bbox: Optional[tuple[int, int, int, int]]) -> None:
         self.selected_bbox = bbox
         self.update()
-<<<<<<< HEAD
+
 
     def reset_view(self) -> None:
         self.qimage = None
@@ -192,9 +192,7 @@ class PreviewWidget(QtWidgets.QWidget):
         self.selected_bbox = None
         self.update()
 
-=======
-             
->>>>>>> 004f9d8 (got rid of frida, edited the subtitle display and overlay, and website)
+
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
@@ -219,7 +217,7 @@ class PreviewWidget(QtWidgets.QWidget):
             painter.end()
             return
 
-        #Merge lines for subtitle-style overlay
+        #Merge lines together, in order to avoid too many small text boxes
         lines = []
         y_threshold = 15
         for e in sorted(self.overlay_entries, key=lambda x: x.get('bbox', (0,0,0,0))[1]):
@@ -238,7 +236,7 @@ class PreviewWidget(QtWidgets.QWidget):
             if not placed:
                 lines.append({'text': text, 'y': y, 'h': h})
 
-       #Subtitle overlay position logic
+       #Subtitle overlay position
         painter.setFont(QtGui.QFont("Helvetica", 14))
         metrics = QtGui.QFontMetrics(painter.font())
         line_height = metrics.lineSpacing()
@@ -587,17 +585,35 @@ class MainWindow(QtWidgets.QWidget):
 
         self.ocr_results = []
         self.table.setRowCount(0)
-        for e in normalized_entries:
+
+        src_lang = self.src_combo.currentData()
+        dst_lang = self.dst_combo.currentData()
+
+        for row, e in enumerate(normalized_entries):
             src_text = e.get("text", "")
-            row = self.table.rowCount()
             self.table.insertRow(row)
             self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(src_text))
+
+            # Translate Button
             btn = QtWidgets.QPushButton("Translate")
             btn.clicked.connect(lambda checked=False, r=row: self.manual_translate_row(r))
             self.table.setCellWidget(row, 1, btn)
-            self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(""))
+
+            self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(""))  # Translation column
             bbox_str = str(e.get("bbox", ""))
             self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(bbox_str))
+
+            # Automatically request translation
+            key = f"{src_lang}|{dst_lang}|{src_text}"
+            if src_text.strip() and key not in self.translation_cache and key not in self.pending_translation_keys:
+                self.pending_translation_keys.add(key)
+                self.translator.translate_async(
+                    src_lang,
+                    dst_lang,
+                    src_text,
+                    tag={"type": "auto", "row": row}
+                )
+
             self.ocr_results.append({
                 "text": src_text,
                 "bbox": e.get("bbox"),
@@ -786,7 +802,7 @@ class MainWindow(QtWidgets.QWidget):
             "   <i>Save</i> to persist them.<br>"
             "<br>"
             "Note: The injection mode depends on LunaHook from LunaTranslator. Ensure the"
-            " LunaTranslator_x64_win10 folder exists, or set LUNA_TRANSLATOR_DIR."
+            " LunaTranslator_x64_win10 folder exists, or set LUNA_TRANSLATOR_DIR. Luna Hook does not work with MacOS system."
         )
         QtWidgets.QMessageBox.information(self, "Help", msg)
 
@@ -808,66 +824,115 @@ class MainWindow(QtWidgets.QWidget):
         super().closeEvent(event)
 
 class DisplayWindow(QtWidgets.QWidget):
-    '''Window that displays most recent translation text for overlay over a game'''
-    '''Takes text from latest translation from main window's table (latest row, column 3 of main window's table)'''
+    """Floating overlay window showing all OCR/translation entries."""
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Display Window")
-        self.resize(400,200)
+        self.resize(400, 200)
         self.setWindowFlags(
             QtCore.Qt.WindowType.WindowStaysOnTopHint |
             QtCore.Qt.WindowType.FramelessWindowHint
         )
-        self.label = QtWidgets.QLabel("Latest translation text will be displayed here once extracted\nDrag box with left click\nResize box by dragging bottom-right corner\nRight-click to alter settings or close this window", self)
-        self.label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
-        self.label.setWordWrap(True)
-
-        layout = QtWidgets.QVBoxLayout()
-        layout.addWidget(self.label)
-        
-        self.setLayout(layout)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMouseTracking(True)
+
         self.drag_pos = None
         self.resizing = False
         self.resize_margin = 8
 
-        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.DefaultContextMenu)
-        self.label.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
-        self.label.setMouseTracking(True)
-        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
-
         self.size_grip = QtWidgets.QSizeGrip(self)
         self.size_grip.setFixedSize(16, 16)
-
-        self.bg_color = QtGui.QColor("#FFFFFF")
-        self.bg_alpha = 255
-        self.update_background()
-
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(16)
-        self.label.setFont(font)
-        self.label.setStyleSheet("color: black;")
-        
-
-    '''Functions to allow movement and resizing of display window (since frameless and transparent, seems to be necessary)'''
-    def _is_in_resize_zone(self, pos) -> bool:
-        return(
-            pos.x() >= self.width() - self.resize_margin or
-            pos.y() >= self.height() - self.resize_margin
+        self.overlay_entries = []
+        self.default_text = (
+            "Latest translation text will be displayed here once extracted\n"
+            "Drag box with left click\nResize box by dragging bottom-right corner\n"
+            "Right-click to alter settings or close this window"
         )
+
+        self.font_family = "Arial"
+        self.font_size = 16
+        self.bold = False
+        self.italic = False
+        self.text_color = QtGui.QColor("white")
+        self.alignment = QtCore.Qt.AlignmentFlag.AlignLeft
+        self.bg_color = QtGui.QColor(0, 0, 0)
+        self.bg_alpha = 180
+
+   
+    def update_entries(self, entries) -> None:
+        self.overlay_entries = entries
+        self.update()
+
+    def changed_text(self, text: str) -> None:
+        if not text:
+            self.overlay_entries = []
+        else:
+            self.overlay_entries = [{"translation": text, "bbox": (0, 0, self.width(), 20)}]
+        self.update()
+
+ 
+    def paintEvent(self, event) -> None:
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+
+        # Overlay background
+        painter.fillRect(self.rect(), QtGui.QColor(
+            self.bg_color.red(), self.bg_color.green(), self.bg_color.blue(), self.bg_alpha
+        ))
+
+        font = QtGui.QFont(self.font_family, self.font_size)
+        font.setBold(self.bold)
+        font.setItalic(self.italic)
+        painter.setFont(font)
+        painter.setPen(self.text_color)
+
+        metrics = QtGui.QFontMetrics(font)
+        line_height = metrics.lineSpacing()
+        overlay_x = 10
+        overlay_width = self.width() - 20
         
+        # If we have OCR entries, use them. Otherwise, show default instructions text.
+        if self.overlay_entries:
+            lines = []
+            y_threshold = 15
+            for e in self.overlay_entries:
+                text = e.get('translation') or e.get('text')
+                if not text:
+                    continue
+                x, y, w, h = e.get('bbox', (0, 0, 0, 0))
+                placed = False
+                for line in lines:
+                    if abs(y - line['y']) <= y_threshold:
+                        line['text'] += " " + text
+                        line['y'] = min(line['y'], y)
+                        line['h'] = max(line['h'], y + h - line['y'])
+                        placed = True
+                        break
+                if not placed:
+                    lines.append({'text': text, 'y': y, 'h': h})
+            text_to_draw = [l['text'] for l in lines]
+        else:
+            
+            text_to_draw = self.default_text.split("\n")
+
+        
+        for i, line in enumerate(text_to_draw):
+            rect = QtCore.QRect(overlay_x, 10 + i * line_height, overlay_width, line_height)
+            painter.drawText(rect, self.alignment, line)
+
+        painter.end()
+
+ 
     def mousePressEvent(self, event) -> None:
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self.drag_pos = event.globalPosition().toPoint()
         event.accept()
 
     def mouseMoveEvent(self, event) -> None:
-        global_pos = event.globalPosition().toPoint()
-        if self.drag_pos is not None:
-            delta = global_pos - self.drag_pos
+        if self.drag_pos:
+            delta = event.globalPosition().toPoint() - self.drag_pos
             self.move(self.pos() + delta)
-            self.drag_pos = global_pos
+            self.drag_pos = event.globalPosition().toPoint()
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:
@@ -875,6 +940,10 @@ class DisplayWindow(QtWidgets.QWidget):
         self.resizing = False
         event.accept()
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.size_grip.move(self.width() - self.size_grip.width(), self.height() - self.size_grip.height())
+        
     def contextMenuEvent(self, event) -> None:
         menu = QtWidgets.QMenu(self)
         settings_action = menu.addAction("Settings")
@@ -888,7 +957,7 @@ class DisplayWindow(QtWidgets.QWidget):
             self.showMinimized()
         elif action == exit_action:
             self.close()
-    
+
     def open_settings(self) -> None:
         if hasattr(self, 'settings_window') and self.settings_window.isVisible():
             self.settings_window.raise_()
@@ -896,106 +965,81 @@ class DisplayWindow(QtWidgets.QWidget):
         self.settings_window = SettingsWindow(self)
         self.settings_window.show()
 
-    def changed_text(self, text: str) -> None:
-        self.label.setText(text)
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        self.size_grip.move(
-            self.width() - self.size_grip.width(),
-            self.height() - self.size_grip.height()
-        )
-
-    def paintEvent(self, event) -> None:
-        painter = QtGui.QPainter(self)
-        painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_Source)
-        painter.fillRect(self.rect(), QtGui.QColor(
-            self.bg_color.red(),
-            self.bg_color.green(),
-            self.bg_color.blue(),
-            self.bg_alpha
-        ))
-        painter.end()
-
-    def update_background(self) -> None:
-        self.update()
-    
 class SettingsWindow(QtWidgets.QWidget):
-    '''Settings window for display window'''
+    """Settings for DisplayWindow (works with overlay style)."""
     def __init__(self, target: 'DisplayWindow') -> None:
         super().__init__()
         self.target = target
-        self.setWindowTitle ("Settings")
+        self.setWindowTitle("Settings")
         self.resize(350, 400)
-        self.setWindowFlags(
-            self.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint
-        )
-        """Keep copy of original configurations"""
-        self.original_font = QtGui.QFont(target.label.font())
-        self.original_text_color = target.label.styleSheet()
+        self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint)
+        self.original_font_family = target.font_family
+        self.original_font_size = target.font_size
+        self.original_bold = target.bold
+        self.original_italic = target.italic
+        self.original_text_color = QtGui.QColor(target.text_color)
         self.original_bg_color = QtGui.QColor(target.bg_color)
         self.original_bg_alpha = target.bg_alpha
-        self.original_alignment = target.label.alignment()
-        
+        self.original_alignment = target.alignment
+
         layout = QtWidgets.QVBoxLayout()
 
-        """Font Settings"""
+       
         font_label = QtWidgets.QLabel("Font:")
         self.font_combo = QtWidgets.QFontComboBox()
-        self.font_combo.setCurrentFont(target.label.font())
+        self.font_combo.setCurrentFont(QtGui.QFont(target.font_family))
         self.font_combo.currentFontChanged.connect(self.font_changed)
         layout.addWidget(font_label)
         layout.addWidget(self.font_combo)
 
-        """Size Settings"""
+       
         size_label = QtWidgets.QLabel("Font Size:")
         self.size_spinner = QtWidgets.QSpinBox()
         self.size_spinner.setRange(6, 40)
-        self.size_spinner.setValue(target.label.font().pointSize())
+        self.size_spinner.setValue(target.font_size)
         self.size_spinner.valueChanged.connect(self.size_changed)
         layout.addWidget(size_label)
         layout.addWidget(self.size_spinner)
 
-        """Bold and Italicize"""
-        self.bold_checkbox = QtWidgets.QCheckBox("Bold?:")
-        self.bold_checkbox.setChecked(target.label.font().bold())
+      
+        self.bold_checkbox = QtWidgets.QCheckBox("Bold?")
+        self.bold_checkbox.setChecked(target.bold)
         self.bold_checkbox.stateChanged.connect(self.bold_changed)
-        self.italic_checkbox = QtWidgets.QCheckBox("Italicize?:")
-        self.italic_checkbox.setChecked(target.label.font().italic())
+        self.italic_checkbox = QtWidgets.QCheckBox("Italic?")
+        self.italic_checkbox.setChecked(target.italic)
         self.italic_checkbox.stateChanged.connect(self.italic_changed)
         layout.addWidget(self.bold_checkbox)
         layout.addWidget(self.italic_checkbox)
 
-        """Text Coloring"""
+      
         self.text_color_button = QtWidgets.QPushButton("Choose text color")
         self.text_color_button.clicked.connect(self.color_changed)
         layout.addWidget(self.text_color_button)
 
-        """Window Opacity Settings"""
-        opacity_label = QtWidgets.QLabel("Opacity:")
-        self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-        self.opacity_slider.setRange(1, 100)
-        self.opacity_slider.setValue(int(target.windowOpacity() * 100))
-        self.opacity_slider.valueChanged.connect(self.opacity_changed)
-        layout.addWidget(opacity_label)
-        layout.addWidget(self.opacity_slider)
-
-        """Background"""
+     
         self.bg_color_button = QtWidgets.QPushButton("Choose background color")
         self.bg_color_button.clicked.connect(self.background_changed)
         layout.addWidget(self.bg_color_button)
 
-        """Alignment"""
-        align_label = QtWidgets.QLabel("Text alignment:")
+       
+        opacity_label = QtWidgets.QLabel("Opacity:")
+        self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.opacity_slider.setRange(1, 100)
+        self.opacity_slider.setValue(int(target.bg_alpha/255*100))
+        self.opacity_slider.valueChanged.connect(self.opacity_changed)
+        layout.addWidget(opacity_label)
+        layout.addWidget(self.opacity_slider)
+
+       
+        align_label = QtWidgets.QLabel("Alignment:")
         self.align_combo = QtWidgets.QComboBox()
-        self.align_combo.addItems(["Left", "Center","Right", "Top", "Bottom"])
+        self.align_combo.addItems(["Left", "Center", "Right", "Top", "Bottom"])
+        self.align_combo.setCurrentText("Left")
         self.align_combo.currentTextChanged.connect(self.alignment_changed)
         layout.addWidget(align_label)
         layout.addWidget(self.align_combo)
 
-        layout.addStretch()
-
-        """For saving or cancelling current settings"""
+     
         button_layout = QtWidgets.QHBoxLayout()
         save_button = QtWidgets.QPushButton("Save")
         cancel_button = QtWidgets.QPushButton("Cancel")
@@ -1005,85 +1049,82 @@ class SettingsWindow(QtWidgets.QWidget):
         button_layout.addWidget(cancel_button)
         layout.addLayout(button_layout)
 
-
+        layout.addStretch()
         self.setLayout(layout)
 
-    """Functions for above settings"""
-    def font_changed(self, font: QtGui.QFont) -> None:
-        current = self.target.label.font()
-        current.setFamily(font.family())
-        self.target.label.setFont(current)
+    # ---------------- Settings Functions ----------------
+    def font_changed(self, font: QtGui.QFont):
+        self.target.font_family = font.family()
+        self.target.update()
 
-    def size_changed(self, size: int) -> None:
-        current = self.target.label.font()
-        current.setPointSize(size)
-        self.target.label.setFont(current)
-    
-    def bold_changed(self, state: int) -> None:
-        current = self.target.label.font()
-        current.setBold(state == QtCore.Qt.CheckState.Checked.value)
-        self.target.label.setFont(current)
+    def size_changed(self, size: int):
+        self.target.font_size = size
+        self.target.update()
 
-    def italic_changed(self, state: int) -> None:
-        current = self.target.label.font()
-        current.setItalic(state == QtCore.Qt.CheckState.Checked.value)
-        self.target.label.setFont(current)
+    def bold_changed(self, state: int):
+        self.target.bold = state == QtCore.Qt.CheckState.Checked.value
+        self.target.update()
 
-    def color_changed(self) -> None:
-        dialog = QtWidgets.QColorDialog(self.target.label.palette().color(QtGui.QPalette.ColorRole.WindowText), self)
-        dialog.setWindowFlags(
-            dialog.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint
-        )
+    def italic_changed(self, state: int):
+        self.target.italic = state == QtCore.Qt.CheckState.Checked.value
+        self.target.update()
+
+    def color_changed(self):
+        dialog = QtWidgets.QColorDialog(self.target.text_color, self)
         if dialog.exec():
             color = dialog.selectedColor()
             if color.isValid():
-                self.target.label.setStyleSheet(f"color: {color.name()};")
+                self.target.text_color = color
+                self.target.update()
 
-    def background_changed(self) -> None:
+    def background_changed(self):
         dialog = QtWidgets.QColorDialog(self.target.bg_color, self)
-        dialog.setWindowFlags(
-            dialog.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint
-        )
         if dialog.exec():
             color = dialog.selectedColor()
             if color.isValid():
                 self.target.bg_color = color
-                self.target.update_background()
-        
-    def opacity_changed(self, value: int) -> None:
-        self.target.bg_alpha = int((value / 100) * 255)
-        self.target.update_background()
-    
-    def alignment_changed(self, text: str) -> None:
+                self.target.update()
+
+    def opacity_changed(self, value: int):
+        self.target.bg_alpha = int((value/100)*255)
+        self.target.update()
+
+    def alignment_changed(self, text: str):
         alignments = {
-            "Center": QtCore.Qt.AlignmentFlag.AlignCenter,
             "Left": QtCore.Qt.AlignmentFlag.AlignLeft,
+            "Center": QtCore.Qt.AlignmentFlag.AlignHCenter,
             "Right": QtCore.Qt.AlignmentFlag.AlignRight,
             "Top": QtCore.Qt.AlignmentFlag.AlignTop,
-            "Bottom": QtCore.Qt.AlignmentFlag.AlignBottom,
+            "Bottom": QtCore.Qt.AlignmentFlag.AlignBottom
         }
-        self.target.label.setAlignment(alignments[text])
-    
-    """Functions for saving and cancelling settings"""
-    def on_save(self) -> None:
-        self.original_font = QtGui.QFont(self.target.label.font())
-        self.original_text_color = self.target.label.styleSheet()
+        self.target.alignment = alignments.get(text, QtCore.Qt.AlignmentFlag.AlignLeft)
+        self.target.update()
+
+   
+    def on_save(self):
+        self.original_font_family = self.target.font_family
+        self.original_font_size = self.target.font_size
+        self.original_bold = self.target.bold
+        self.original_italic = self.target.italic
+        self.original_text_color = QtGui.QColor(self.target.text_color)
         self.original_bg_color = QtGui.QColor(self.target.bg_color)
         self.original_bg_alpha = self.target.bg_alpha
-        self.original_alignment = self.target.label.alignment()
+        self.original_alignment = self.target.alignment
         self.close()
 
-    def on_cancel(self) -> None:
-        self.target.label.setFont(self.original_font)
-        self.target.label.setStyleSheet(self.original_text_color)
+    def on_cancel(self):
+        self.target.font_family = self.original_font_family
+        self.target.font_size = self.original_font_size
+        self.target.bold = self.original_bold
+        self.target.italic = self.original_italic
+        self.target.text_color = self.original_text_color
         self.target.bg_color = self.original_bg_color
         self.target.bg_alpha = self.original_bg_alpha
-        self.target.update_background()
-        self.target.label.setAlignment(self.original_alignment)
+        self.target.alignment = self.original_alignment
+        self.target.update()
         self.close()
 
     def closeEvent(self, event) -> None:
-        self.on_cancel()
         event.accept()
 
 def main() -> None:
