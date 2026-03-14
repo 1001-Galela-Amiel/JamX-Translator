@@ -4,6 +4,7 @@ import numpy as np
 import win32gui, win32ui, win32con
 import ctypes
 from PySide6 import QtWidgets, QtCore, QtGui
+import pytesseract
 
 
 class WindowLister:
@@ -66,7 +67,6 @@ def ocr_image_data(pil_image):
     """
     img = np.array(pil_image)
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    
     
     try:
         th = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY,11,2)

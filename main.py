@@ -15,6 +15,7 @@ import json
 import time
 from difflib import SequenceMatcher
 from typing import List, Dict, Any, Optional
+from pynput import keyboard
 
 from PySide6 import QtWidgets, QtCore, QtGui
 
@@ -22,6 +23,7 @@ from capture import WindowLister, capture_window_image, capture_window_bgra
 from ocr_backend import ocr_image_data
 from translate_backend import LANG_MAP
 from translation_worker import Translator
+from snipper import Snipper
 
 try:
     from luna_worker import LunaHookWorker
@@ -126,6 +128,18 @@ class OCRWorker(QtCore.QThread):
         self._running = False
         self.wait(2000)
 
+
+class ShortcutWorker(QtCore.QObject):
+    """Background thread for detecting keyboard presses for shortcut key purposes"""
+    pressed = QtCore.Signal()
+
+    def run(self):
+        def on_press(key):
+            if key == keyboard.Key.f1:
+                self.pressed.emit()
+
+        with keyboard.Listener(on_press=on_press) as listener:
+            listener.join()
 
 class PreviewWidget(QtWidgets.QWidget):
     """Renders the captured game frame with translated overlays."""
@@ -344,12 +358,19 @@ class MainWindow(QtWidgets.QWidget):
         self.ocr_spin = QtWidgets.QSpinBox()
         self.ocr_spin.setRange(100, 5000)
         self.ocr_spin.setValue(300)
+        self.manual_ocr_button = QtWidgets.QPushButton("Manual OCR")
+        self.manual_ocr_button.clicked.connect(self.start_snip)
         ctrl.addWidget(QtWidgets.QLabel("Frame (ms)"))
         ctrl.addWidget(self.interval_spin)
         ctrl.addSpacing(20)
         ctrl.addWidget(QtWidgets.QLabel("OCR (ms)"))
         ctrl.addWidget(self.ocr_spin)
         ctrl.addStretch(1)
+        ctrl.addWidget(self.manual_ocr_button)
+
+        snip_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F1"), self)
+        snip_shortcut.activated.connect(self.start_snip)
+        
         ocr_layout.addLayout(ctrl)
 
         inj_layout = QtWidgets.QVBoxLayout(self.inj_tab)
@@ -427,6 +448,13 @@ class MainWindow(QtWidgets.QWidget):
         self.src_combo.currentIndexChanged.connect(self.on_src_lang_changed)
 
         self.table.itemChanged.connect(self.display_window_update)
+
+        self.shortcut_thread = QtCore.QThread()
+        self.shortcut_worker = ShortcutWorker()
+        self.shortcut_worker.moveToThread(self.shortcut_thread)
+        self.shortcut_worker.pressed.connect(self.start_snip)
+        self.shortcut_thread.started.connect(self.shortcut_worker.run)
+        self.shortcut_thread.start()
 
         self.refresh_windows()
 
@@ -620,6 +648,18 @@ class MainWindow(QtWidgets.QWidget):
                 "lang": e.get("lang", "unknown"),
                 "translation": "",
             })
+    
+    def start_snip(self):
+        self.snipper= Snipper()
+        self.snipper.image_captured.connect(self.on_snip)
+        self.snipper.show()
+
+    def on_snip(self, img):
+
+        data, processed_img = ocr_image_data(img, self.src_combo.currentData())
+        self.on_ocr_ready(data)
+        self.image_window = ImageWindow(img, processed_img)
+        self.image_window.show()
 
     # ---------------------- Hook handling ----------------------
     def start_hook(self) -> None:
@@ -812,6 +852,14 @@ class MainWindow(QtWidgets.QWidget):
             trans_item = self.table.item(last_row, 2)
             if trans_item:
                 self.display_signal.emit(trans_item.text())
+
+    def update_last_row_translation(self, text: str) -> None:
+        last_row = self.table.rowCount() - 1
+        if last_row >= 0:
+            # Ensure no accidental loop occurs (text edited -> table changed -> change text -> change table, etc.)
+            self.table.blockSignals(True)
+            self.table.setItem(last_row, 2, QtWidgets.QTableWidgetItem(text))
+            self.table.blockSignals(False)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self.display_window.close()
@@ -1127,11 +1175,42 @@ class SettingsWindow(QtWidgets.QWidget):
     def closeEvent(self, event) -> None:
         event.accept()
 
+
+"""Window that appears after applying Manual OCR for debug purposes"""
+class ImageWindow(QtWidgets.QWidget):
+    def __init__(self, img1, img2):
+        super().__init__()
+        self.setWindowTitle("Manual OCR")
+
+        qt_img1 = img1.toqpixmap()
+        qt_img2 = img2.toqpixmap()
+
+        label1 = QtWidgets.QLabel()
+        label1.setPixmap(qt_img1)
+        label1_name = QtWidgets.QLabel("Original")
+        label2 = QtWidgets.QLabel()
+        label2.setPixmap(qt_img2)
+        label2_name = QtWidgets.QLabel("Processed")
+
+        col1 = QtWidgets.QVBoxLayout()
+        col1.addWidget(label1_name)
+        col1.addWidget(label1)
+
+        col2 = QtWidgets.QVBoxLayout()
+        col2.addWidget(label2_name)
+        col2.addWidget(label2)
+
+        layout = QtWidgets.QHBoxLayout()
+        layout.addLayout(col1)
+        layout.addLayout(col2)
+        self.setLayout(layout)
+
 def main() -> None:
     app = QtWidgets.QApplication(sys.argv)
     win2 = DisplayWindow()
     win = MainWindow(win2)
     win.display_signal.connect(win2.changed_text)
+    win2.text_edited_signal.connect(win.update_last_row_translation)
     win.show()
     win2.show()
     sys.exit(app.exec())

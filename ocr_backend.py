@@ -43,6 +43,7 @@ def ocr_image_data(pil_image, prefer_lang_code="auto"):
 
     result, _ = _ocr_engine(img_bgr)
     entries = []
+    processed_img = Image.fromarray(img_bgr)
 
     if not result:
         return entries
@@ -73,4 +74,4 @@ def ocr_image_data(pil_image, prefer_lang_code="auto"):
             "lang": "unknown",
         })
 
-    return entries
+    return entries, processed_img
