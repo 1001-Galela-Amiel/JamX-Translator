@@ -1210,7 +1210,6 @@ def main() -> None:
     win2 = DisplayWindow()
     win = MainWindow(win2)
     win.display_signal.connect(win2.changed_text)
-    win2.text_edited_signal.connect(win.update_last_row_translation)
     win.show()
     win2.show()
     sys.exit(app.exec())
