@@ -3,6 +3,7 @@ import time
 import numpy as np
 from PIL import Image
 from rapidocr_onnxruntime import RapidOCR
+from image_preprocessor import removeBackground
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(APP_DIR, "logs")
@@ -27,8 +28,12 @@ def ocr_image_data(pil_image, prefer_lang_code="auto"):
             pass
         _last_debug_save = now
 
+
     img = np.array(pil_image)
 
+    """Apply preprocessing to image before reformatting to cv2 and sending to OCR"""
+    img = removeBackground(img, 0, 0, 0, 255, 255, 179, 0)
+    
     if img.ndim == 3 and img.shape[1] > 1600:
         scale = 1600.0 / img.shape[1]
         new_h = int(img.shape[0] * scale)
