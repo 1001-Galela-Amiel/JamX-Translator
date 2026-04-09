@@ -8,6 +8,7 @@ from PIL import Image, ImageEnhance, ImageFilter
 """Taken from Minh Shiba's (creator of Sugoi Toolkit) now deprecated "Visual-Novel-OCR" https://github.com/leminhyen2/Visual-Novel-OCR, GPL 3.0"""
 
 """H refers to hue (color values), S refers to saturation, V refers to brightness"""
+"""Requires image in VC2 format (np.array on PIL Images)"""
 def removeBackground(img, hMin, sMin, vMin, hMax, sMax, vMax, binarizedValue):
 
     # Set minimum and max HSV values to display
