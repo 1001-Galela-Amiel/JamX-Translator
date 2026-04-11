@@ -100,6 +100,7 @@ class OCRWorker(QtCore.QThread):
         self._running = False
         self._last_error_message: str = ""
         self._last_error_ts: float = 0.0
+        self.enable_preprocessing = False
 
     def run(self) -> None:
         self._running = True
@@ -108,7 +109,7 @@ class OCRWorker(QtCore.QThread):
             try:
                 pil_img = capture_window_image(self.hwnd)
                 if pil_img is not None:
-                    data = ocr_image_data(pil_img, self.prefer_lang)
+                    data = ocr_image_data(pil_img, self.prefer_lang, self.enable_preprocessing)
                     self.ocr_ready.emit(data)
             except Exception as e:
                 msg = str(e)
@@ -360,14 +361,22 @@ class MainWindow(QtWidgets.QWidget):
         self.ocr_spin = QtWidgets.QSpinBox()
         self.ocr_spin.setRange(100, 5000)
         self.ocr_spin.setValue(300)
+
         self.manual_ocr_button = QtWidgets.QPushButton("Manual OCR")
         self.manual_ocr_button.clicked.connect(self.start_snip)
+        self.preprocessing_settings_button = QtWidgets.QPushButton("Preprocessing Settings")
+        self.preprocessing_settings_button.clicked.connect(self.open_preprocessing_settings)
+        self.enable_preprocessing_checkbox = QtWidgets.QCheckBox("Enable preprocessing")
+        self.enable_preprocessing_checkbox.stateChanged.connect(self.preprocessing_enable)
+        
         ctrl.addWidget(QtWidgets.QLabel("Frame (ms)"))
         ctrl.addWidget(self.interval_spin)
         ctrl.addSpacing(20)
         ctrl.addWidget(QtWidgets.QLabel("OCR (ms)"))
         ctrl.addWidget(self.ocr_spin)
-        ctrl.addStretch(1)
+        ctrl.addStretch(1.5)
+        ctrl.addWidget(self.enable_preprocessing_checkbox)
+        ctrl.addWidget(self.preprocessing_settings_button)
         ctrl.addWidget(self.manual_ocr_button)
 
         snip_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F1"), self)
@@ -545,6 +554,8 @@ class MainWindow(QtWidgets.QWidget):
             prefer_lang=self.src_combo.currentData(),
         )
         self.ocr_worker.ocr_ready.connect(self.on_ocr_ready)
+        # Enable preprocessing if related checkbox ticked
+        self.ocr_worker.enable_preprocessing = self.enable_preprocessing_checkbox.isChecked()
         self.ocr_worker.start()
 
     def stop_capture(self) -> None:
@@ -659,8 +670,9 @@ class MainWindow(QtWidgets.QWidget):
     def on_snip(self, img):
 
         try:
-            data, processed_img = ocr_image_data(img, self.src_combo.currentData())
+            data, processed_img = ocr_image_data(img, self.src_combo.currentData(), self.enable_preprocessing_checkbox.isChecked())
             self.on_ocr_ready(data)
+        # Case that OCR returns no data, but still want to see the processed image with current settings
         except:
             import numpy as np
             from PIL import Image
@@ -668,6 +680,17 @@ class MainWindow(QtWidgets.QWidget):
             processed_img = removeBackground(temp_img)
             processed_img = Image.fromarray(processed_img)
 
+        self.image_window = ImageWindow(img, processed_img)
+        self.image_window.show()
+    
+    # Function for opening preprocessing settings for automatic OCR capture via debug_frame
+    def open_preprocessing_settings(self):
+        import cv2
+        from PIL import Image
+        temp_img = cv2.imread("logs/debug_frame.png")
+        processed_img = removeBackground(temp_img)
+        img = Image.fromarray(temp_img)
+        processed_img = Image.fromarray(processed_img)
         self.image_window = ImageWindow(img, processed_img)
         self.image_window.show()
 
@@ -871,6 +894,11 @@ class MainWindow(QtWidgets.QWidget):
             self.table.setItem(last_row, 2, QtWidgets.QTableWidgetItem(text))
             self.table.blockSignals(False)
 
+    # Enable preprocessing within current running ocr_worker, if applicable
+    def preprocessing_enable(self, _):
+        if self.ocr_worker:
+            self.ocr_worker.enable_preprocessing = self.enable_preprocessing_checkbox.isChecked()
+    
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self.display_window.close()
         self.stop_capture()
@@ -1217,6 +1245,8 @@ class ImageWindow(QtWidgets.QWidget):
         self.preprocess_btn.clicked.connect(self.open_preprocessing_window)
         fin_layout.addWidget(self.preprocess_btn)
         self.setLayout(fin_layout)
+
+        # Adding button to enable whether or not preprocessing is applied before sending to OCR model
 
         self.preprocessing_window = None
 
