@@ -922,6 +922,7 @@ class DisplayWindow(QtWidgets.QWidget):
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMouseTracking(True)
 
+        destroyed = QtCore.Signal()
         self.drag_pos = None
         self.resizing = False
         self.resize_margin = 8
@@ -935,16 +936,31 @@ class DisplayWindow(QtWidgets.QWidget):
             "Right-click to alter settings or close this window"
         )
 
-        self.font_family = "Arial"
-        self.font_size = 16
-        self.bold = False
-        self.italic = False
-        self.text_color = QtGui.QColor("white")
-        self.alignment = QtCore.Qt.AlignmentFlag.AlignLeft
-        self.bg_color = QtGui.QColor(0, 0, 0)
-        self.bg_alpha = 180
+        # Initalize look of text display window with saved settings, if exists
 
-   
+        # Noting that, since got rid of alignment option, manually set
+        if os.path.exists("text_overlay_display_settings.json"):
+            with open("text_overlay_display_settings.json", "r") as f:
+                data = json.load(f)
+            try:
+                self.font_family = data["font"]
+                self.font_size = data["font_size"]
+                self.text_color = QtGui.QColor(data["text_color"])
+                self.bg_color = QtGui.QColor(data["background_color"])
+                self.bg_alpha = data["opacity"]
+                self.alignment = QtCore.Qt.AlignmentFlag.AlignLeft
+            except KeyError:
+                pass
+        
+        # Else, go with a default look
+        else:
+            self.font_family = "Arial"
+            self.font_size = 16
+            self.text_color = QtGui.QColor("white")
+            self.alignment = QtCore.Qt.AlignmentFlag.AlignLeft
+            self.bg_color = QtGui.QColor(0, 0, 0)
+            self.bg_alpha = 180
+        
     def update_entries(self, entries) -> None:
         self.overlay_entries = entries
         self.update()
@@ -967,8 +983,6 @@ class DisplayWindow(QtWidgets.QWidget):
         ))
 
         font = QtGui.QFont(self.font_family, self.font_size)
-        font.setBold(self.bold)
-        font.setItalic(self.italic)
         painter.setFont(font)
         painter.setPen(self.text_color)
 
@@ -1042,6 +1056,7 @@ class DisplayWindow(QtWidgets.QWidget):
         elif action == minimize_action:
             self.showMinimized()
         elif action == exit_action:
+            self.destroyed.emit()
             self.close()
 
     def open_settings(self) -> None:
@@ -1050,6 +1065,8 @@ class DisplayWindow(QtWidgets.QWidget):
             return
         self.settings_window = SettingsWindow(self)
         self.settings_window.show()
+    
+
 
 class SettingsWindow(QtWidgets.QWidget):
     """Settings for DisplayWindow (works with overlay style)."""
@@ -1057,42 +1074,17 @@ class SettingsWindow(QtWidgets.QWidget):
         super().__init__()
         self.target = target
         self.setWindowTitle("Settings")
-        self.resize(350, 400)
+        self.resize(350, 200)
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint)
+        target.destroyed.connect(self.on_cancel)
+        
         self.original_font_family = target.font_family
         self.original_font_size = target.font_size
-        self.original_bold = target.bold
-        self.original_italic = target.italic
         self.original_text_color = QtGui.QColor(target.text_color)
         self.original_bg_color = QtGui.QColor(target.bg_color)
         self.original_bg_alpha = target.bg_alpha
-        self.original_alignment = target.alignment
 
         layout = QtWidgets.QVBoxLayout()
-
-        font_label = QtWidgets.QLabel("Font:")
-        self.font_combo = QtWidgets.QFontComboBox()
-        self.font_combo.setCurrentFont(QtGui.QFont(target.font_family))
-        self.font_combo.currentFontChanged.connect(self.font_changed)
-        layout.addWidget(font_label)
-        layout.addWidget(self.font_combo)
-
-        size_label = QtWidgets.QLabel("Font Size:")
-        self.size_spinner = QtWidgets.QSpinBox()
-        self.size_spinner.setRange(6, 40)
-        self.size_spinner.setValue(target.font_size)
-        self.size_spinner.valueChanged.connect(self.size_changed)
-        layout.addWidget(size_label)
-        layout.addWidget(self.size_spinner)
-
-        self.bold_checkbox = QtWidgets.QCheckBox("Bold?")
-        self.bold_checkbox.setChecked(target.bold)
-        self.bold_checkbox.stateChanged.connect(self.bold_changed)
-        self.italic_checkbox = QtWidgets.QCheckBox("Italic?")
-        self.italic_checkbox.setChecked(target.italic)
-        self.italic_checkbox.stateChanged.connect(self.italic_changed)
-        layout.addWidget(self.bold_checkbox)
-        layout.addWidget(self.italic_checkbox)
 
         self.text_color_button = QtWidgets.QPushButton("Choose text color")
         self.text_color_button.clicked.connect(self.color_changed)
@@ -1110,23 +1102,33 @@ class SettingsWindow(QtWidgets.QWidget):
         layout.addWidget(opacity_label)
         layout.addWidget(self.opacity_slider)
 
-        align_label = QtWidgets.QLabel("Alignment:")
-        self.align_combo = QtWidgets.QComboBox()
-        self.align_combo.addItems(["Left", "Center", "Right", "Top", "Bottom"])
-        self.align_combo.setCurrentText("Left")
-        self.align_combo.currentTextChanged.connect(self.alignment_changed)
-        layout.addWidget(align_label)
-        layout.addWidget(self.align_combo)
+        font_label = QtWidgets.QLabel("Font:")
+        self.font_combo = QtWidgets.QFontComboBox()
+        self.font_combo.setCurrentFont(QtGui.QFont(target.font_family))
+        self.font_combo.currentFontChanged.connect(self.font_changed)
+        layout.addWidget(font_label)
+        layout.addWidget(self.font_combo)
+
+        size_label = QtWidgets.QLabel("Font Size:")
+        self.size_spinner = QtWidgets.QSpinBox()
+        self.size_spinner.setRange(6, 40)
+        self.size_spinner.setValue(target.font_size)
+        self.size_spinner.valueChanged.connect(self.size_changed)
+        layout.addWidget(size_label)
+        layout.addWidget(self.size_spinner)
 
         button_layout = QtWidgets.QHBoxLayout()
         save_button = QtWidgets.QPushButton("Save")
         cancel_button = QtWidgets.QPushButton("Cancel")
+        default_button = QtWidgets.QPushButton("Reset to default")
         save_button.clicked.connect(self.on_save)
         cancel_button.clicked.connect(self.on_cancel)
+        default_button.clicked.connect(self.reset_to_default)
         button_layout.addWidget(save_button)
+        button_layout.addWidget(default_button)
         button_layout.addWidget(cancel_button)
         layout.addLayout(button_layout)
-
+        
         layout.addStretch()
         self.setLayout(layout)
 
@@ -1137,14 +1139,6 @@ class SettingsWindow(QtWidgets.QWidget):
 
     def size_changed(self, size: int):
         self.target.font_size = size
-        self.target.update()
-
-    def bold_changed(self, state: int):
-        self.target.bold = state == QtCore.Qt.CheckState.Checked.value
-        self.target.update()
-
-    def italic_changed(self, state: int):
-        self.target.italic = state == QtCore.Qt.CheckState.Checked.value
         self.target.update()
 
     def color_changed(self):
@@ -1166,43 +1160,48 @@ class SettingsWindow(QtWidgets.QWidget):
     def opacity_changed(self, value: int):
         self.target.bg_alpha = int((value/100)*255)
         self.target.update()
-
-    def alignment_changed(self, text: str):
-        alignments = {
-            "Left": QtCore.Qt.AlignmentFlag.AlignLeft,
-            "Center": QtCore.Qt.AlignmentFlag.AlignHCenter,
-            "Right": QtCore.Qt.AlignmentFlag.AlignRight,
-            "Top": QtCore.Qt.AlignmentFlag.AlignTop,
-            "Bottom": QtCore.Qt.AlignmentFlag.AlignBottom
-        }
-        self.target.alignment = alignments.get(text, QtCore.Qt.AlignmentFlag.AlignLeft)
-        self.target.update()
-
    
     def on_save(self):
         self.original_font_family = self.target.font_family
         self.original_font_size = self.target.font_size
-        self.original_bold = self.target.bold
-        self.original_italic = self.target.italic
         self.original_text_color = QtGui.QColor(self.target.text_color)
         self.original_bg_color = QtGui.QColor(self.target.bg_color)
         self.original_bg_alpha = self.target.bg_alpha
-        self.original_alignment = self.target.alignment
+
+        data = {
+            "text_color": self.original_text_color.name(),
+            "background_color": self.original_bg_color.name(),
+            "opacity": self.original_bg_alpha,
+            "font": self.original_font_family,
+            "font_size": self.original_font_size
+        }
+        with open("text_overlay_display_settings.json", "w") as f:
+            json.dump(data, f, indent=2)
         self.close()
 
     def on_cancel(self):
         self.target.font_family = self.original_font_family
         self.target.font_size = self.original_font_size
-        self.target.bold = self.original_bold
-        self.target.italic = self.original_italic
         self.target.text_color = self.original_text_color
         self.target.bg_color = self.original_bg_color
         self.target.bg_alpha = self.original_bg_alpha
-        self.target.alignment = self.original_alignment
         self.target.update()
         self.close()
 
+    # Return text window settings to defined default
+    def reset_to_default(self):
+        self.target.font_family = "Arial"
+        self.target.font_size = 16
+        self.target.text_color = QtGui.QColor("white")
+        self.target.bg_color = QtGui.QColor(0, 0, 0)
+        self.target.bg_alpha = 180
+        self.font_combo.setCurrentFont(QtGui.QFont(self.target.font_family))
+        self.size_spinner.setValue(self.target.font_size)
+        self.opacity_slider.setValue(int(self.target.bg_alpha/255*100))
+        self.target.update()
+
     def closeEvent(self, event) -> None:
+        self.on_cancel()
         event.accept()
 
 
@@ -1351,7 +1350,7 @@ class ImageWindow(QtWidgets.QWidget):
         
         # Save button, saves current preprocessing settings (won't save unless pressed)
         self.save_button = QtWidgets.QPushButton("Save preprocessing settings")
-        self.save_button.clicked.connect(self.save_values)
+        self.save_button.clicked.connect(self.save_preprocessing_values)
         preprocessing_layout.addWidget(self.save_button)
 
         # Default button (returning sliders to default values (0 for mins, 255 for max (except for color, max is 179))
@@ -1396,7 +1395,7 @@ class ImageWindow(QtWidgets.QWidget):
         self.setLayout(fin_layout)
 
     # Function to save current values of preprocessing sliders to preprocessing_settings.json
-    def save_values(self):
+    def save_preprocessing_values(self):
         data = {
             "h_min": self.hue_min_slider.value(),
             "s_min": self.saturation_min_slider.value(),
