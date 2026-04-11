@@ -680,7 +680,7 @@ class MainWindow(QtWidgets.QWidget):
             processed_img = removeBackground(temp_img)
             processed_img = Image.fromarray(processed_img)
 
-        self.image_window = ImageWindow(img, processed_img)
+        self.image_window = ImageWindow(img, processed_img, parent_window=self)
         self.image_window.show()
     
     # Function for opening preprocessing settings for automatic OCR capture via debug_frame
@@ -691,7 +691,7 @@ class MainWindow(QtWidgets.QWidget):
         processed_img = removeBackground(temp_img)
         img = Image.fromarray(temp_img)
         processed_img = Image.fromarray(processed_img)
-        self.image_window = ImageWindow(img, processed_img)
+        self.image_window = ImageWindow(img, processed_img, parent_window=self)
         self.image_window.show()
 
     # ---------------------- Hook handling ----------------------
@@ -1208,23 +1208,34 @@ class SettingsWindow(QtWidgets.QWidget):
 
 """Window that appears after applying Manual OCR, or applying preprocessing to autOCR, for debug purposes"""
 class ImageWindow(QtWidgets.QWidget):
-    def __init__(self, img1, img2):
+    def __init__(self, img1, img2, parent_window):
         import numpy as np
+        from PIL import Image
         super().__init__()
         self.setWindowTitle("Manual OCR")
-                
+        self.parent_window = parent_window
+
+
+        #-------- Image Display ---------        
         fin_layout = QtWidgets.QVBoxLayout()
         img_layout = QtWidgets.QHBoxLayout()
 
         self.original_image = np.array(img1)
         self.processed_image = img2
-        qt_img1 = img1.toqpixmap()
-        qt_img2 = self.processed_image.toqpixmap()
+        
+        temp_img1 = img1
+        temp_img2 = img2
+        # Scaling size of image for display purposes
+        temp_img1.thumbnail((600, 600), Image.LANCZOS)
+        temp_img2.thumbnail((600, 600), Image.LANCZOS)
+        qt_img1 = temp_img1.toqpixmap()
+        qt_img2 = temp_img2.toqpixmap()
         
         label1 = QtWidgets.QLabel()
         label1.setPixmap(qt_img1)
         label1_name = QtWidgets.QLabel("Original")
         self.label2 = QtWidgets.QLabel()
+        
         self.label2.setPixmap(qt_img2)
         label2_name = QtWidgets.QLabel("Processed")
 
@@ -1239,43 +1250,11 @@ class ImageWindow(QtWidgets.QWidget):
         img_layout.addLayout(col1)
         img_layout.addLayout(col2)
 
-        # Adding button to open preprocessing settings
-        fin_layout.addLayout(img_layout)
-        self.preprocess_btn = QtWidgets.QPushButton("Open Preprocessing Settings")
-        self.preprocess_btn.clicked.connect(self.open_preprocessing_window)
-        fin_layout.addWidget(self.preprocess_btn)
-        self.setLayout(fin_layout)
-
-        # Adding button to enable whether or not preprocessing is applied before sending to OCR model
-
-        self.preprocessing_window = None
-
-    def open_preprocessing_window(self):
-        if self.preprocessing_window is None:
-            self.preprocessing_window = PreprocessingWindow(self)
-        self.preprocessing_window.show()
-
-    def closeEvent(self, event):
-        if self.preprocessing_window is not None:
-            self.preprocessing_window.close()
-        event.accept()
-
-    def updateImage(self, h_min, s_min, v_min, h_max, s_max, v_max, binarize):
-        from PIL import Image
-        self.processed_image = removeBackground(self.original_image, h_min, s_min, v_min, h_max, s_max, v_max, binarize)
-        new_display_image = Image.fromarray(self.processed_image)
-        new_display_image = new_display_image.toqpixmap()
-        self.label2.setPixmap(new_display_image)
-    
-
-class PreprocessingWindow(QtWidgets.QWidget):
-    def __init__(self, image_window: ImageWindow):
-        super().__init__()
-        self.setWindowTitle("Image Preprocessing")
-        self.setMinimumWidth(420)
-
-        self.image_window = image_window
-        layout = QtWidgets.QVBoxLayout()
+        #--------- Preprocessing Widgets -------------
+        self.collapsible = QtWidgets.QWidget()
+        preprocessing_label = QtWidgets.QLabel("Preprocessing Settings")
+        preprocessing_layout = QtWidgets.QVBoxLayout()
+        preprocessing_layout.addWidget(preprocessing_label)
         min_hue_row = QtWidgets.QHBoxLayout()
         min_saturation_row = QtWidgets.QHBoxLayout()
         min_brightness_row = QtWidgets.QHBoxLayout()
@@ -1293,7 +1272,7 @@ class PreprocessingWindow(QtWidgets.QWidget):
         min_hue_row.addWidget(hue_min_label)
         min_hue_row.addWidget(self.h_min)
         min_hue_row.addWidget(self.hue_min_slider)
-        layout.addLayout(min_hue_row)
+        preprocessing_layout.addLayout(min_hue_row)
         
         # Saturation min slider
         saturation_min_label = QtWidgets.QLabel("Saturation Minimum:")
@@ -1304,7 +1283,7 @@ class PreprocessingWindow(QtWidgets.QWidget):
         min_saturation_row.addWidget(saturation_min_label)
         min_saturation_row.addWidget(self.s_min)
         min_saturation_row.addWidget(self.saturation_min_slider)
-        layout.addLayout(min_saturation_row)
+        preprocessing_layout.addLayout(min_saturation_row)
 
         # Brightness min slider
         brightness_min_label = QtWidgets.QLabel("Brightness Minimum:")
@@ -1315,7 +1294,7 @@ class PreprocessingWindow(QtWidgets.QWidget):
         min_brightness_row.addWidget(brightness_min_label)
         min_brightness_row.addWidget(self.v_min)
         min_brightness_row.addWidget(self.brightness_min_slider)
-        layout.addLayout(min_brightness_row)
+        preprocessing_layout.addLayout(min_brightness_row)
 
         # Color max slider
         hue_max_label = QtWidgets.QLabel("Color Maximum:")
@@ -1326,7 +1305,7 @@ class PreprocessingWindow(QtWidgets.QWidget):
         max_hue_row.addWidget(hue_max_label)
         max_hue_row.addWidget(self.h_max)
         max_hue_row.addWidget(self.hue_max_slider)
-        layout.addLayout(max_hue_row)
+        preprocessing_layout.addLayout(max_hue_row)
 
         # Saturation max slider
         saturation_max_label = QtWidgets.QLabel("Saturation Maximum:")
@@ -1337,7 +1316,7 @@ class PreprocessingWindow(QtWidgets.QWidget):
         max_saturation_row.addWidget(saturation_max_label)
         max_saturation_row.addWidget(self.s_max)
         max_saturation_row.addWidget(self.saturation_max_slider)
-        layout.addLayout(max_saturation_row)
+        preprocessing_layout.addLayout(max_saturation_row)
 
         # Brightness max slider
         brightness_max_label = QtWidgets.QLabel("Brightness Maximum:")
@@ -1348,7 +1327,7 @@ class PreprocessingWindow(QtWidgets.QWidget):
         max_brightness_row.addWidget(brightness_max_label)
         max_brightness_row.addWidget(self.v_max)
         max_brightness_row.addWidget(self.brightness_max_slider)
-        layout.addLayout(max_brightness_row)
+        preprocessing_layout.addLayout(max_brightness_row)
 
         # Binarize slider
         binarize_label = QtWidgets.QLabel("Binarize:")
@@ -1359,7 +1338,7 @@ class PreprocessingWindow(QtWidgets.QWidget):
         binarize_row.addWidget(binarize_label)
         binarize_row.addWidget(self.binarize)
         binarize_row.addWidget(self.binarize_slider)
-        layout.addLayout(binarize_row)
+        preprocessing_layout.addLayout(binarize_row)
         
         # Calls to change slider label based on current slider value
         self.hue_min_slider.valueChanged.connect(self.sliders_changed)
@@ -1370,20 +1349,25 @@ class PreprocessingWindow(QtWidgets.QWidget):
         self.brightness_max_slider.valueChanged.connect(self.sliders_changed)
         self.binarize_slider.valueChanged.connect(self.sliders_changed)
         
-        # Save button
+        # Save button, saves current preprocessing settings (won't save unless pressed)
         self.save_button = QtWidgets.QPushButton("Save preprocessing settings")
         self.save_button.clicked.connect(self.save_values)
-        layout.addWidget(self.save_button)
+        preprocessing_layout.addWidget(self.save_button)
 
-        # Default button (returning sliders to default values
+        # Default button (returning sliders to default values (0 for mins, 255 for max (except for color, max is 179))
         self.default_button = QtWidgets.QPushButton("Reset to default")
         self.default_button.clicked.connect(self.reset_to_default)
-        layout.addWidget(self.default_button)
+        preprocessing_layout.addWidget(self.default_button)
 
-        # Cancel button
+        # Apply button, used to reapply OCR with current preprocessing settings on taken image
+        self.reapply_button = QtWidgets.QPushButton("Reapply OCR")
+        self.reapply_button.clicked.connect(self.reapply_OCR)
+        preprocessing_layout.addWidget(self.reapply_button)
+
+        # Cancel button, closes menu
         self.cancel_button = QtWidgets.QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.cancel_preprocessing)
-        layout.addWidget(self.cancel_button)
+        preprocessing_layout.addWidget(self.cancel_button)
         
         # Instantiate sliders with preprocessing__settings if possible
         if os.path.exists("preprocessing_settings.json"):
@@ -1399,8 +1383,17 @@ class PreprocessingWindow(QtWidgets.QWidget):
                 self.binarize_slider.setValue(data["binarization"])
             except KeyError:
                 pass
+        
+        self.collapsible.setLayout(preprocessing_layout)
+        self.collapsible.setVisible(False)
 
-        self.setLayout(layout)
+        # Button to toggle collapsible
+        self.show_preprocessing_settings_btn = QtWidgets.QPushButton("Show preprocessing settings ▼")
+        self.show_preprocessing_settings_btn.clicked.connect(self.show_preprocesssing_settings)
+        fin_layout.addLayout(img_layout)
+        fin_layout.addWidget(self.show_preprocessing_settings_btn)
+        fin_layout.addWidget(self.collapsible)
+        self.setLayout(fin_layout)
 
     # Function to save current values of preprocessing sliders to preprocessing_settings.json
     def save_values(self):
@@ -1439,12 +1432,36 @@ class PreprocessingWindow(QtWidgets.QWidget):
         self.s_max.setText(str(self.saturation_max_slider.value()))
         self.v_max.setText(str(self.brightness_max_slider.value()))
         self.binarize.setText(str(self.binarize_slider.value()))
-        self.image_window.updateImage(
+        self.updateImage(
             self.hue_min_slider.value(), self.saturation_min_slider.value(),
             self.brightness_min_slider.value(), self.hue_max_slider.value(),
             self.saturation_max_slider.value(), self.brightness_max_slider.value(),
             self.binarize_slider.value()
         )
+
+    # Update preprocessed image of window based on sliders
+    def updateImage(self, h_min, s_min, v_min, h_max, s_max, v_max, binarize):
+        from PIL import Image
+        self.processed_image = removeBackground(self.original_image, h_min, s_min, v_min, h_max, s_max, v_max, binarize)
+        new_display_image = Image.fromarray(self.processed_image)
+        new_display_image.thumbnail((600, 600), Image.LANCZOS)
+        new_display_image = new_display_image.toqpixmap()
+        self.label2.setPixmap(new_display_image)
+
+    # Toggle whether or not preprocessing settings are visible
+    def show_preprocesssing_settings(self):
+        visible = self.collapsible.isVisible()
+        self.collapsible.setVisible(not visible)
+        self.show_preprocessing_settings_btn.setText("Collapse preprocessing settings ▲" if visible else "Show preprocessing settings ▼")
+        self.adjustSize()
+
+    # Try running preprocessed image of current snapshot into OCR again with current settings (not necessarily saved)
+    def reapply_OCR(self):
+        try:
+            data, _ = ocr_image_data(self.processed_image, self.parent_window.src_combo.currentData(), enable_preprocessing=False)
+            self.parent_window.on_ocr_ready(data)
+        except:
+            pass
 
 def main() -> None:
     app = QtWidgets.QApplication(sys.argv)
