@@ -31,14 +31,8 @@ def ocr_image_data(pil_image, prefer_lang_code="auto"):
 
 
     img = np.array(pil_image)
-    """Getting current preprocessing settings from .json if possible and preprocessing based on them, if possible"""
-    if os.path.exists("preprocessing_settings.json"):
-        with open("preprocessing_settings.json", "r") as f:
-            data = json.load(f)
-        try:
-            img = removeBackground(img, data["h_min"], data["s_min"], data["v_min"], data["h_max"], data["s_max"], data["v_max"], data["binarization"])
-        except KeyError:
-            pass
+    """If preprocessing enabled, apply to ocr image"""
+    img = removeBackground(img)
     
     if img.ndim == 3 and img.shape[1] > 1600:
         scale = 1600.0 / img.shape[1]
@@ -55,6 +49,7 @@ def ocr_image_data(pil_image, prefer_lang_code="auto"):
     result, _ = _ocr_engine(img_bgr)
     entries = []
     processed_img = Image.fromarray(img_bgr)
+
     if not result:
         return entries
 

@@ -380,7 +380,7 @@ class MainWindow(QtWidgets.QWidget):
         self.inject_log.setReadOnly(True)
         self.inject_log.setPlaceholderText(
             "Injection log. When attached, hooked text and translations will appear here."
-        )
+        ) 
         mono_font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
         self.inject_log.setFont(mono_font)
         inj_layout.addWidget(self.inject_log, 1)
@@ -658,9 +658,16 @@ class MainWindow(QtWidgets.QWidget):
 
     def on_snip(self, img):
 
-        data, processed_img = ocr_image_data(img, self.src_combo.currentData())
-        self.on_ocr_ready(data)
-        print(data)
+        try:
+            data, processed_img = ocr_image_data(img, self.src_combo.currentData())
+            self.on_ocr_ready(data)
+        except:
+            import numpy as np
+            from PIL import Image
+            temp_img = np.array(img)
+            processed_img = removeBackground(temp_img)
+            processed_img = Image.fromarray(processed_img)
+
         self.image_window = ImageWindow(img, processed_img)
         self.image_window.show()
 
@@ -1171,7 +1178,7 @@ class SettingsWindow(QtWidgets.QWidget):
         event.accept()
 
 
-"""Window that appears after applying Manual OCR for debug purposes"""
+"""Window that appears after applying Manual OCR, or applying preprocessing to autOCR, for debug purposes"""
 class ImageWindow(QtWidgets.QWidget):
     def __init__(self, img1, img2):
         import numpy as np
@@ -1334,7 +1341,7 @@ class PreprocessingWindow(QtWidgets.QWidget):
         self.binarize_slider.valueChanged.connect(self.sliders_changed)
         
         # Save button
-        self.save_button = QtWidgets.QPushButton("Save")
+        self.save_button = QtWidgets.QPushButton("Save preprocessing settings")
         self.save_button.clicked.connect(self.save_values)
         layout.addWidget(self.save_button)
 
