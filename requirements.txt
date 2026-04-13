@@ -6,6 +6,4 @@ mss
 dxcam
 argostranslate
 rapidocr-onnxruntime
-numpy<2
 onnxruntime==1.17.3
-pynput
