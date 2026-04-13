@@ -58,10 +58,18 @@ if WINDOWS:
     def _gdi_capture(hwnd: int) -> Optional[np.ndarray]:
         l, t, r, b = win32gui.GetClientRect(hwnd)
         w, h = max(0, r - l), max(0, b - t)
+        use_window_rect = False
         if w == 0 or h == 0:
-            return None
+            try:
+                wl, wt, wr, wb = win32gui.GetWindowRect(hwnd)
+                w, h = max(0, wr - wl), max(0, wb - wt)
+                use_window_rect = True
+            except Exception:
+                return None
+            if w == 0 or h == 0:
+                return None
 
-        hdc_src = win32gui.GetDC(hwnd)
+        hdc_src = win32gui.GetWindowDC(hwnd) if use_window_rect else win32gui.GetDC(hwnd)
         if not hdc_src:
             return None
 
@@ -145,10 +153,27 @@ class WindowLister:
 def capture_window_bgra(hwnd: int) -> Optional[np.ndarray]:
     """Return BGRA frame as numpy array."""
     if WINDOWS:
-        frame = _dxgi_capture(hwnd)
+        frame = _gdi_capture(hwnd)
         if frame is not None:
             return frame
-        return _gdi_capture(hwnd)
+
+        frame = _dxgi_capture(hwnd)
+        if frame is not None:
+            try:
+                arr = np.asarray(frame)
+                if arr.size == 0 or arr.ndim < 2:
+                    return None
+                if arr.ndim == 3 and arr.shape[2] == 4:
+                    return arr.astype(np.uint8, copy=False)
+                if arr.ndim == 3 and arr.shape[2] == 3:
+                    b = arr[:, :, 0]
+                    g = arr[:, :, 1]
+                    r = arr[:, :, 2]
+                    a = np.full_like(b, 255)
+                    return np.dstack([b, g, r, a]).astype(np.uint8)
+            except Exception:
+                return None
+        return None
 
     if MAC:
         from mac_capture import capture_window_image 
