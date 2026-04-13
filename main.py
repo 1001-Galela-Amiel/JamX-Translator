@@ -13,16 +13,17 @@ import os
 import sys
 import json
 import time
+import re
 from difflib import SequenceMatcher
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, cast
 from pynput import keyboard
 from image_preprocessor import removeBackground
 
 from PySide6 import QtWidgets, QtCore, QtGui
 
-from capture import WindowLister, capture_window_image, capture_window_bgra
+from capture import WindowLister, capture_window_bgra, capture_window_image
 from ocr_backend import ocr_image_data
-from translate_backend import LANG_MAP
+from translate_backend import LANG_MAP, translate_text
 from translation_worker import Translator
 from snipper import Snipper
 
@@ -30,6 +31,11 @@ try:
     from luna_worker import LunaHookWorker
 except Exception:
     LunaHookWorker = None
+
+try:
+    from memory_patch_worker import ProcessMemoryPatchWorker
+except Exception:
+    ProcessMemoryPatchWorker = None
 
 
 APP_DIR = os.path.dirname(__file__)
@@ -110,12 +116,13 @@ class OCRWorker(QtCore.QThread):
                 pil_img = capture_window_image(self.hwnd)
                 if pil_img is not None:
                     data = ocr_image_data(pil_img, self.prefer_lang, self.enable_preprocessing)
+                    if isinstance(data, tuple):
+                        data = data[0]
                     self.ocr_ready.emit(data)
             except Exception as e:
                 msg = str(e)
                 now = time.time()
                 if msg != self._last_error_message or (now - self._last_error_ts) >= 2.0:
-                    print("[OCR ERROR]", e)
                     self._last_error_message = msg
                     self._last_error_ts = now
                 if "CreateCompatibleDC failed" in msg:
@@ -165,7 +172,9 @@ class PreviewWidget(QtWidgets.QWidget):
                 import numpy as np
                 if not isinstance(frame_bgra, np.ndarray) or frame_bgra.ndim != 3 or frame_bgra.shape[2] != 4:
                     try:
-                        pil_img = frame_bgra.convert("RGBA")
+                        if not hasattr(frame_bgra, "convert"):
+                            return
+                        pil_img = cast(Any, frame_bgra).convert("RGBA")
                         w, h = pil_img.size
                         buf = pil_img.tobytes("raw", "BGRA")
                         self._qimage_buf = buf
@@ -215,10 +224,8 @@ class PreviewWidget(QtWidgets.QWidget):
 
         tgt_rect = self.rect()
 
-        # Background Reset color
         painter.fillRect(tgt_rect, QtGui.QColor(32, 34, 37))
 
-        #Capture frame and draw
         if self.qimage is not None and not self.qimage.isNull():
             src_w, src_h = self.qimage.width(), self.qimage.height()
             scale = min(tgt_rect.width() / src_w, tgt_rect.height() / src_h)
@@ -233,7 +240,6 @@ class PreviewWidget(QtWidgets.QWidget):
             painter.end()
             return
 
-        #Merge lines together, in order to avoid too many small text boxes
         lines = []
         y_threshold = 15
         for e in sorted(self.overlay_entries, key=lambda x: x.get('bbox', (0,0,0,0))[1]):
@@ -252,13 +258,11 @@ class PreviewWidget(QtWidgets.QWidget):
             if not placed:
                 lines.append({'text': text, 'y': y, 'h': h})
 
-       #Subtitle overlay position
         if self.qimage is not None and not self.qimage.isNull():
             painter.setFont(QtGui.QFont("Helvetica", 14))
             metrics = QtGui.QFontMetrics(painter.font())
             line_height = metrics.lineSpacing()
 
-            # Find bottom of all OCR boxes
             bottom_y = max([line['y'] + line['h'] for line in lines])
             vertical_padding = 100  
 
@@ -268,16 +272,13 @@ class PreviewWidget(QtWidgets.QWidget):
             overlay_width = int(draw_rect.width() * 0.8)
             overlay_height = line_height * len(lines) + 8
 
-            # Ensure the overlay doesn't go beyond the bottom of the widget
             if overlay_y + overlay_height > draw_rect.bottom():
                 overlay_y = draw_rect.bottom() - overlay_height - 5
 
-            #Semi-transparent background for text
             painter.setPen(QtCore.Qt.NoPen)
             painter.setBrush(QtGui.QColor(0, 0, 0, 180))
             painter.drawRect(overlay_x - 4, overlay_y - 4, overlay_width + 8, overlay_height + 8)
 
-            #Text overlay/lines
             painter.setPen(self.text_overlay_color)
             for i, line in enumerate(lines):
                 painter.drawText(
@@ -307,7 +308,21 @@ class MainWindow(QtWidgets.QWidget):
     def __init__(self, display_window: 'DisplayWindow') -> None:
         super().__init__()
         self.setWindowTitle("Game Translation Tool")
-        self.resize(1200, 700)
+        self.setMinimumSize(800, 500)
+
+        screen = QtWidgets.QApplication.primaryScreen()
+        if screen:
+            avail = screen.availableGeometry()
+            w = min(1200, int(avail.width() * 0.75))
+            h = min(700, int(avail.height() * 0.75))
+            self.resize(w, h)
+            self.move(
+                avail.x() + (avail.width() - w) // 2,
+                avail.y() + (avail.height() - h) // 2,
+            )
+        else:
+            self.resize(1200, 700)
+
         self.display_window = display_window
         self.translate_signal.connect(self.translate_and_update)
 
@@ -315,24 +330,38 @@ class MainWindow(QtWidgets.QWidget):
         self.translator.translation_ready.connect(self.on_translation_ready)
         self.translation_cache: Dict[str, str] = {}
         self.pending_translation_keys: set[str] = set()
+        self.pending_embed_by_key: Dict[str, List[str]] = {}
 
         self.worker: Optional[CaptureWorker] = None
         self.ocr_worker: Optional[OCRWorker] = None
-        self.hook_worker: Optional[QtCore.QThread] = None
+        self.hook_worker: Optional[Any] = None
         self.attached_hwnd: Optional[int] = None
         self.ocr_results: List[Dict[str, Any]] = []
         self.latest_ocr: List[Dict[str, Any]] = []
         self._active_text_signature: Optional[tuple[str, ...]] = None
         self._last_text_switch_ts: float = 0.0
         self._text_switch_lock_ms: int = 220
-        self._text_similarity_threshold: float = 0.30
+        self._text_similarity_threshold: float = 0.7
+        self._ocr_history: List[Dict[str, Any]] = []
+        self._ocr_history_size: int = 5
+        self._ocr_group_similarity_threshold: float = 0.72
+        self._ocr_min_group_votes: int = 2
         self.selected_bbox: Optional[tuple[int, int, int, int]] = None
+        self.memory_patch_worker = None
+        self._recent_qlie_texts: Dict[str, float] = {}
+        self._recent_qlie_ttl_sec: float = 25.0
+        self._recent_embed_texts: Dict[str, float] = {}
+        self._recent_embed_ttl_sec: float = 20.0
+        self._recent_logged_pairs: Dict[str, float] = {}
+        self._recent_logged_pair_ttl_sec: float = 8.0
+        self._detected_engine: Optional[str] = None
+        self._detected_hook_functions: set[str] = set()
         
         root = QtWidgets.QHBoxLayout(self)
         left_col = QtWidgets.QVBoxLayout()
         right_col = QtWidgets.QVBoxLayout()
-        root.addLayout(left_col, 1)
-        root.addLayout(right_col, 1)
+        root.addLayout(left_col, 3)
+        root.addLayout(right_col, 2)
 
         bar = QtWidgets.QHBoxLayout()
         self.win_list = WindowComboBox()
@@ -374,7 +403,7 @@ class MainWindow(QtWidgets.QWidget):
         ctrl.addSpacing(20)
         ctrl.addWidget(QtWidgets.QLabel("OCR (ms)"))
         ctrl.addWidget(self.ocr_spin)
-        ctrl.addStretch(1.5)
+        ctrl.addStretch(1)
         ctrl.addWidget(self.enable_preprocessing_checkbox)
         ctrl.addWidget(self.preprocessing_settings_button)
         ctrl.addWidget(self.manual_ocr_button)
@@ -385,11 +414,19 @@ class MainWindow(QtWidgets.QWidget):
         ocr_layout.addLayout(ctrl)
 
         inj_layout = QtWidgets.QVBoxLayout(self.inj_tab)
+        embed_row = QtWidgets.QHBoxLayout()
+        self.embed_toggle = QtWidgets.QCheckBox("Enable in-game subtitle replacement")
+        self.embed_toggle.setChecked(False)
+        self.embed_toggle.setToolTip("Use Luna embed callback to replace original subtitle text inside game.")
+        embed_row.addWidget(self.embed_toggle)
+        embed_row.addStretch(1)
+        inj_layout.addLayout(embed_row)
+
         self.inject_log = QtWidgets.QPlainTextEdit()
         self.inject_log.setReadOnly(True)
         self.inject_log.setPlaceholderText(
             "Injection log. When attached, hooked text and translations will appear here."
-        ) 
+        )
         mono_font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
         self.inject_log.setFont(mono_font)
         inj_layout.addWidget(self.inject_log, 1)
@@ -417,25 +454,27 @@ class MainWindow(QtWidgets.QWidget):
         lang_row.addWidget(self.dst_combo)
         self.text_color_btn = QtWidgets.QPushButton("Text Color")
         lang_row.addWidget(self.text_color_btn)
+        self.overlay_toggle = QtWidgets.QCheckBox("Show translation overlay")
+        self.overlay_toggle.setChecked(False)
+        lang_row.addWidget(self.overlay_toggle)
         right_col.addLayout(lang_row)
 
-        self.table = QtWidgets.QTableWidget(0, 4)
+        self.table = QtWidgets.QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels([
             "Source Text",
-            "Translate",
             "Translation",
             "BBox/Source",
         ])
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
-        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
         self.table.cellClicked.connect(self.on_row_selected)
         self.table.itemSelectionChanged.connect(self.on_select)
         right_col.addWidget(self.table, 1)
 
         self.edit = QtWidgets.QPlainTextEdit()
+        self.edit.setMaximumHeight(100)
         right_col.addWidget(self.edit)
 
         btn_row = QtWidgets.QHBoxLayout()
@@ -459,6 +498,7 @@ class MainWindow(QtWidgets.QWidget):
         self.settings_button.clicked.connect(self.open_settings)
         self.help_btn.clicked.connect(self.show_help)
         self.text_color_btn.clicked.connect(self.choose_text_overlay_color)
+        self.overlay_toggle.toggled.connect(self.on_overlay_toggled)
         self.src_combo.currentIndexChanged.connect(self.on_src_lang_changed)
 
         self.table.itemChanged.connect(self.display_window_update)
@@ -471,6 +511,7 @@ class MainWindow(QtWidgets.QWidget):
         self.shortcut_thread.start()
 
         self.refresh_windows()
+        self.on_overlay_toggled(False)
 
     # ---------------------- Window and attach logic ----------------------
     def refresh_windows(self) -> None:
@@ -529,9 +570,11 @@ class MainWindow(QtWidgets.QWidget):
     def reset_ui_on_detach(self) -> None:
         self.latest_ocr = []
         self.ocr_results = []
+        self._ocr_history = []
         self._active_text_signature = None
         self._last_text_switch_ts = 0.0
         self.pending_translation_keys.clear()
+        self.pending_embed_by_key.clear()
         self.selected_bbox = None
         self.preview.reset_view()
         self.table.setRowCount(0)
@@ -557,7 +600,6 @@ class MainWindow(QtWidgets.QWidget):
             prefer_lang=self.src_combo.currentData(),
         )
         self.ocr_worker.ocr_ready.connect(self.on_ocr_ready)
-        # Enable preprocessing if related checkbox ticked
         self.ocr_worker.enable_preprocessing = self.enable_preprocessing_checkbox.isChecked()
         self.ocr_worker.start()
 
@@ -576,19 +618,32 @@ class MainWindow(QtWidgets.QWidget):
             self.ocr_worker = None
 
     def on_frame_ready(self, frame_bgra) -> None:
-        overlay = []
         src_lang = self.src_combo.currentData()
         dst_lang = self.dst_combo.currentData()
         for e in self.latest_ocr:
             txt = e.get("text") or ""
             key = f"{src_lang}|{dst_lang}|{txt}"
-            trans = self.translation_cache.get(key)
             if txt.strip() and key not in self.translation_cache and key not in self.pending_translation_keys:
                 self.translate_signal.emit(src_lang, dst_lang, txt)
-            if trans:
-                overlay.append({"text": txt, "bbox": e.get("bbox"), "translation": trans})
-        self.preview.update_overlay(overlay)
         self.preview.update_frame(frame_bgra)
+        self._refresh_preview_overlay()
+
+    def _refresh_preview_overlay(self) -> None:
+        try:
+            overlay: List[Dict[str, Any]] = []
+            src_lang = self.src_combo.currentData()
+            dst_lang = self.dst_combo.currentData()
+            for e in self.latest_ocr:
+                txt = (e.get("text") or "").strip()
+                if not txt:
+                    continue
+                key = f"{src_lang}|{dst_lang}|{txt}"
+                trans_text = self.translation_cache.get(key)
+                if trans_text:
+                    overlay.append({"text": txt, "bbox": e.get("bbox"), "translation": trans_text})
+            self.preview.update_overlay(overlay)
+        except Exception:
+            pass
 
     def on_ocr_ready(self, entries: List[Dict[str, Any]]) -> None:
         normalized_entries: List[Dict[str, Any]] = []
@@ -602,14 +657,60 @@ class MainWindow(QtWidgets.QWidget):
                 "lang": e.get("lang", "unknown"),
             })
 
+        if not normalized_entries:
+            return
+
         text_signature = tuple(e["text"] for e in normalized_entries)
 
-        if text_signature == self._active_text_signature:
+        self._ocr_history.append({
+            "signature": text_signature,
+            "entries": normalized_entries,
+            "ts": time.time(),
+        })
+        if len(self._ocr_history) > self._ocr_history_size:
+            self._ocr_history = self._ocr_history[-self._ocr_history_size :]
+
+        groups: List[Dict[str, Any]] = []
+        for item in self._ocr_history:
+            item_sig = cast(tuple[str, ...], item["signature"])
+            item_text = "\n".join(item_sig)
+            matched = None
+            for group in groups:
+                group_text = "\n".join(cast(tuple[str, ...], group["signature"]))
+                score = SequenceMatcher(None, item_text, group_text).ratio()
+                if score >= self._ocr_group_similarity_threshold:
+                    matched = group
+                    break
+            if matched is None:
+                groups.append({
+                    "signature": item_sig,
+                    "votes": 1,
+                    "latest": item,
+                })
+            else:
+                matched["votes"] = int(matched["votes"]) + 1
+                matched["latest"] = item
+
+        best_group = max(
+            groups,
+            key=lambda g: (int(g["votes"]), float(cast(Dict[str, Any], g["latest"])["ts"])),
+        )
+        best_votes = int(best_group["votes"])
+        selected = cast(Dict[str, Any], best_group["latest"])
+        selected_signature = cast(tuple[str, ...], selected["signature"])
+        selected_entries = cast(List[Dict[str, Any]], selected["entries"])
+
+        if best_votes < self._ocr_min_group_votes and len(self._ocr_history) > 1:
+            latest = self._ocr_history[-1]
+            selected_signature = cast(tuple[str, ...], latest["signature"])
+            selected_entries = cast(List[Dict[str, Any]], latest["entries"])
+
+        if selected_signature == self._active_text_signature:
             return
 
         if self._active_text_signature is not None:
             current_text = "\n".join(self._active_text_signature)
-            incoming_text = "\n".join(text_signature)
+            incoming_text = "\n".join(selected_signature)
             similarity = SequenceMatcher(None, current_text, incoming_text).ratio()
             if similarity >= self._text_similarity_threshold:
                 return
@@ -620,12 +721,9 @@ class MainWindow(QtWidgets.QWidget):
             if elapsed_ms < self._text_switch_lock_ms:
                 return
 
-        if not normalized_entries:
-            return
-
-        self._active_text_signature = text_signature
+        self._active_text_signature = selected_signature
         self._last_text_switch_ts = now
-        self.latest_ocr = normalized_entries
+        self.latest_ocr = selected_entries
 
         self.ocr_results = []
         self.table.setRowCount(0)
@@ -633,21 +731,14 @@ class MainWindow(QtWidgets.QWidget):
         src_lang = self.src_combo.currentData()
         dst_lang = self.dst_combo.currentData()
 
-        for row, e in enumerate(normalized_entries):
+        for row, e in enumerate(selected_entries):
             src_text = e.get("text", "")
             self.table.insertRow(row)
             self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(src_text))
-
-            # Translate Button
-            btn = QtWidgets.QPushButton("Translate")
-            btn.clicked.connect(lambda checked=False, r=row: self.manual_translate_row(r))
-            self.table.setCellWidget(row, 1, btn)
-
-            self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(""))  # Translation column
+            self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(""))
             bbox_str = str(e.get("bbox", ""))
-            self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(bbox_str))
+            self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(bbox_str))
 
-            # Automatically request translation
             key = f"{src_lang}|{dst_lang}|{src_text}"
             if src_text.strip() and key not in self.translation_cache and key not in self.pending_translation_keys:
                 self.pending_translation_keys.add(key)
@@ -664,6 +755,7 @@ class MainWindow(QtWidgets.QWidget):
                 "lang": e.get("lang", "unknown"),
                 "translation": "",
             })
+        self._refresh_preview_overlay()
     
     def start_snip(self):
         self.snipper= Snipper()
@@ -671,12 +763,15 @@ class MainWindow(QtWidgets.QWidget):
         self.snipper.show()
 
     def on_snip(self, img):
-
         try:
-            data, processed_img = ocr_image_data(img, self.src_combo.currentData(), self.enable_preprocessing_checkbox.isChecked())
+            result = ocr_image_data(img, self.src_combo.currentData(), self.enable_preprocessing_checkbox.isChecked())
+            if isinstance(result, tuple):
+                data, processed_img = result
+            else:
+                data = result
+                processed_img = img
             self.on_ocr_ready(data)
-        # Case that OCR returns no data, but still want to see the processed image with current settings
-        except:
+        except Exception:
             import numpy as np
             from PIL import Image
             temp_img = np.array(img)
@@ -686,7 +781,6 @@ class MainWindow(QtWidgets.QWidget):
         self.image_window = ImageWindow(img, processed_img, parent_window=self)
         self.image_window.show()
     
-    # Function for opening preprocessing settings for automatic OCR capture via debug_frame
     def open_preprocessing_settings(self):
         import cv2
         from PIL import Image
@@ -698,23 +792,288 @@ class MainWindow(QtWidgets.QWidget):
         self.image_window.show()
 
     # ---------------------- Hook handling ----------------------
+    def _resolve_pid_from_hwnd(self) -> Optional[int]:
+        if not self.attached_hwnd:
+            return None
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            pid = wintypes.DWORD()
+            ctypes.windll.user32.GetWindowThreadProcessId(wintypes.HWND(int(self.attached_hwnd)), ctypes.byref(pid))
+            return int(pid.value) if pid.value else None
+        except Exception:
+            return None
+
+    def _append_inject_log(self, message: str) -> None:
+        msg = str(message or "")
+        if not msg:
+            return
+        self.inject_log.appendPlainText(msg)
+
+    def _should_show_status_message(self, message: str) -> bool:
+        text = str(message or "").strip().lower()
+        if not text:
+            return False
+        keywords = (
+            "attached",
+            "process connected",
+            "process removed",
+            "detected engine",
+            "hook detected",
+            "embed translation enabled",
+            "error",
+            "failed",
+            "unavailable",
+            "stopped",
+        )
+        return any(k in text for k in keywords)
+
+    def _write_debug_event(self, event: str, **payload: Any) -> None:
+        return
+
+    def _analyze_status_line(self, line: str) -> None:
+        text = str(line or "")
+        low = text.lower()
+
+        if text.startswith("[helper-debug] "):
+            raw = text[len("[helper-debug] "):].strip()
+            try:
+                payload = json.loads(raw)
+                event = str(payload.get("event") or "helper")
+                if event == "output_text":
+                    try:
+                        if bool(payload.get("is_qlie_output")):
+                            cleaned = str(payload.get("clean_text") or "").strip()
+                            raw_txt = str(payload.get("raw_text") or "").strip()
+                            now = time.time()
+                            for t in (cleaned, raw_txt):
+                                if t:
+                                    self._recent_qlie_texts[t] = now
+                    except Exception:
+                        pass
+                payload.pop("type", None)
+                payload.pop("event", None)
+                self._write_debug_event(f"helper.{event}", **payload)
+            except Exception:
+                self._write_debug_event("helper.raw", raw=text)
+            return
+
+        if "qlie" in low and self._detected_engine != "QLIE":
+            self._detected_engine = "QLIE"
+            self._append_inject_log("Detected engine: QLIE")
+            self._write_debug_event("engine.detected", engine="QLIE", source_line=text)
+
+        fn_match = re.search(r":\s*([A-Za-z_][A-Za-z0-9_]{2,})\s+[0-9A-Fa-f]{6,16}", text)
+        if fn_match:
+            fn_name = fn_match.group(1)
+            if fn_name not in self._detected_hook_functions:
+                self._detected_hook_functions.add(fn_name)
+                self._append_inject_log(f"Hook function detected: {fn_name}")
+                self._write_debug_event("hook.function_detected", function=fn_name, source_line=text)
+
+        hook_insert = re.search(r"Embed/QLIE hook detected:\s*pid=(\d+)\s*addr=0x([0-9A-Fa-f]+)\s*code=(.*)$", text)
+        if hook_insert:
+            self._append_inject_log(
+                f"Embed/QLIE hook detected: pid={hook_insert.group(1)} addr=0x{hook_insert.group(2)}"
+            )
+            self._write_debug_event(
+                "hook.embed_detected",
+                hook_pid=int(hook_insert.group(1)),
+                hook_addr=f"0x{hook_insert.group(2)}",
+                hook_code=hook_insert.group(3),
+            )
+
+        if "embed callback sent" in low:
+            return
+
+        if low.startswith("process connected:") or low.startswith("process removed:"):
+            self._append_inject_log(text)
+            self._write_debug_event("process.lifecycle", detail=text)
+
+    def _is_recent_qlie_text(self, text: str) -> bool:
+        t = str(text or "").strip()
+        if not t:
+            return False
+        now = time.time()
+        for k, ts in list(self._recent_qlie_texts.items()):
+            if (now - ts) > self._recent_qlie_ttl_sec:
+                self._recent_qlie_texts.pop(k, None)
+        if t in self._recent_qlie_texts:
+            return True
+        compact = t.replace("\r", "").replace("\n", "").replace(" ", "")
+        for k in self._recent_qlie_texts.keys():
+            kc = k.replace("\r", "").replace("\n", "").replace(" ", "")
+            if compact and kc and (compact == kc):
+                return True
+        return False
+
+    def _remember_embed_text(self, text: str) -> None:
+        t = str(text or "").strip()
+        if not t:
+            return
+        now = time.time()
+        self._recent_embed_texts[t] = now
+        for key, ts in list(self._recent_embed_texts.items()):
+            if (now - ts) > self._recent_embed_ttl_sec:
+                self._recent_embed_texts.pop(key, None)
+
+    def _is_recent_embed_text(self, text: str) -> bool:
+        t = str(text or "").strip()
+        if not t:
+            return False
+        now = time.time()
+        for key, ts in list(self._recent_embed_texts.items()):
+            if (now - ts) > self._recent_embed_ttl_sec:
+                self._recent_embed_texts.pop(key, None)
+        if t in self._recent_embed_texts:
+            return True
+        compact = t.replace("\r", "").replace("\n", "").replace(" ", "")
+        for key in self._recent_embed_texts.keys():
+            kc = key.replace("\r", "").replace("\n", "").replace(" ", "")
+            if compact and kc and compact == kc:
+                return True
+        return False
+
+    def _should_log_hook_translation(self, text: str) -> bool:
+        t = str(text or "").strip()
+        if not t:
+            return False
+        if self._is_recent_embed_text(t):
+            return True
+
+        low = t.lower()
+        if any(k in low for k in ("file(&f)", "screen(&s)", "help(&h)", "ver1.", "progress control")):
+            return False
+        if any(k in t for k in ("ファイル(&F)", "画面(&S)", "進行制御(&M)", "ヘルプ(&H)")):
+            return False
+        if re.search(r"([一-龯ぁ-んァ-ン])\1\1", t):
+            return False
+        if t.count("「") >= 4 or t.count("」") >= 4:
+            return False
+
+        compact_len = len(t.replace("\r", "").replace("\n", "").replace(" ", ""))
+        if compact_len > 90:
+            return False
+        if self._is_repetitive_noise_text(t):
+            return False
+        return True
+
+    def _normalize_log_text(self, text: str) -> str:
+        t = str(text or "").strip().lower()
+        if not t:
+            return ""
+        t = t.replace("\r", "").replace("\n", "")
+        t = re.sub(r"[\s\u3000]+", "", t)
+        t = t.strip("\"'`\u201c\u201d\u2018\u2019\u300c\u300d\u300e\u300f\uff08\uff09()[]{}<>")
+        return t
+
+    def _is_repetitive_noise_text(self, text: str) -> bool:
+        compact = self._normalize_log_text(text)
+        if len(compact) < 8:
+            return False
+
+        max_unit = min(16, max(1, len(compact) // 3))
+        for unit in range(1, max_unit + 1):
+            if len(compact) % unit != 0:
+                continue
+            repeat_count = len(compact) // unit
+            if repeat_count < 3:
+                continue
+            part = compact[:unit]
+            if part * repeat_count == compact:
+                return True
+
+        stretched_runs = len(re.findall(r"([a-z\u4e00-\u9fff\u3041-\u3093\u30a1-\u30f3])\1{2,}", compact))
+        if stretched_runs >= 3:
+            return True
+        return False
+
+    def _should_emit_hook_log(self, source_text: str, translated_text: str) -> bool:
+        if not self._should_log_hook_translation(source_text):
+            return False
+
+        src_norm = self._normalize_log_text(source_text)
+        dst_norm = self._normalize_log_text(translated_text)
+        if not src_norm or not dst_norm:
+            return False
+        if src_norm == dst_norm:
+            return False
+        if self._is_repetitive_noise_text(source_text) or self._is_repetitive_noise_text(translated_text):
+            return False
+
+        now = time.time()
+        for key, ts in list(self._recent_logged_pairs.items()):
+            if (now - ts) > self._recent_logged_pair_ttl_sec:
+                self._recent_logged_pairs.pop(key, None)
+
+        pair_key = f"{src_norm}=>{dst_norm}"
+        if pair_key in self._recent_logged_pairs:
+            return False
+        self._recent_logged_pairs[pair_key] = now
+        return True
+
     def start_hook(self) -> None:
         if not self.attached_hwnd:
             return
         self.stop_hook()
         if LunaHookWorker is None:
             self.status.setText("Luna hook backend unavailable.")
-            self.inject_log.appendPlainText(
+            self._append_inject_log(
                 "Luna hook backend unavailable. Ensure LunaTranslator_x64_win10 exists "
                 "or set LUNA_TRANSLATOR_DIR."
             )
             return
         src_lang = (self.src_combo.currentData() or "auto").lower()
         codepage = HOOK_CODEPAGE_MAP.get(src_lang, 932)
-        self.hook_worker = LunaHookWorker(self.attached_hwnd, codepage=codepage)
-        self.hook_worker.text_ready.connect(self.on_hook_text)
-        self.hook_worker.status.connect(self.on_hook_status)
-        self.hook_worker.start()
+        embed_enabled = bool(self.embed_toggle.isChecked())
+        effective_embed_enabled = bool(embed_enabled)
+        self._write_debug_event(
+            "hook.start",
+            src_lang=src_lang,
+            dst_lang=(self.dst_combo.currentData() or "en"),
+            codepage=codepage,
+            embed_enabled=embed_enabled,
+            effective_embed_enabled=effective_embed_enabled,
+        )
+        worker = LunaHookWorker(
+            self.attached_hwnd,
+            codepage=codepage,
+            enable_embed=effective_embed_enabled,
+        )
+        self.hook_worker = worker
+        worker.text_ready.connect(self.on_hook_text)
+        worker.status.connect(self.on_hook_status)
+        worker.embed_text_requested.connect(self.on_embed_text_requested)
+        worker.start()
+
+        if ProcessMemoryPatchWorker and effective_embed_enabled:
+            pid = self._resolve_pid_from_hwnd()
+            if pid:
+                try:
+                    self.memory_patch_worker = ProcessMemoryPatchWorker(
+                        pid,
+                        status_cb=self._append_inject_log,
+                        source_codepage=codepage,
+                        debug_cb=self._on_memory_patch_debug,
+                    )
+                    self.memory_patch_worker.start()
+                except Exception as e:
+                    self._append_inject_log(f"Memory patch worker start failed: {e}")
+            else:
+                self._append_inject_log("Memory patch worker skipped: failed to resolve pid.")
+                self._write_debug_event("memory_patch.skipped", reason="resolve_pid_failed")
+        elif effective_embed_enabled and not ProcessMemoryPatchWorker:
+            self._append_inject_log("Memory patch worker unavailable: import failed.")
+            self._write_debug_event("memory_patch.skipped", reason="worker_unavailable")
+
+    def _on_memory_patch_debug(self, payload: Dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            return
+        event_name = str(payload.get("event") or "memory_patch")
+        data = dict(payload)
+        data.pop("event", None)
+        self._write_debug_event(f"memory_patch.{event_name}", **data)
 
     def stop_hook(self) -> None:
         if self.hook_worker:
@@ -723,19 +1082,28 @@ class MainWindow(QtWidgets.QWidget):
             except Exception:
                 pass
             self.hook_worker = None
+        self.pending_embed_by_key.clear()
+        if self.memory_patch_worker:
+            try:
+                self.memory_patch_worker.stop()
+            except Exception:
+                pass
+            self.memory_patch_worker = None
 
     def on_hook_text(self, text: str) -> None:
         src_lang = self.src_combo.currentData()
         dst_lang = self.dst_combo.currentData()
+        self._write_debug_event("hook.text", src_lang=src_lang, dst_lang=dst_lang, text=text)
+
+        if not self._should_log_hook_translation(text):
+            return
 
         timestamp = time.strftime("%H:%M:%S")
-
         row = self.table.rowCount()
         self.table.insertRow(row)
         self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(text))
-        self.table.setItem(row, 1, QtWidgets.QTableWidgetItem("hook"))
-        self.table.setItem(row, 2, QtWidgets.QTableWidgetItem("(translating...)"))
-        self.table.setItem(row, 3, QtWidgets.QTableWidgetItem("hook"))
+        self.table.setItem(row, 1, QtWidgets.QTableWidgetItem("(translating...)"))
+        self.table.setItem(row, 2, QtWidgets.QTableWidgetItem("hook"))
         self.ocr_results.append({
             "text": text,
             "bbox": (0, 0, 0, 0),
@@ -751,8 +1119,60 @@ class MainWindow(QtWidgets.QWidget):
         )
 
     def on_hook_status(self, message: str) -> None:
-        self.status.setText(message)
-        self.inject_log.appendPlainText(message)
+        if self._should_show_status_message(message):
+            self.status.setText(message)
+        low_msg = str(message or "").lower()
+        if "process removed:" in low_msg:
+            if self.memory_patch_worker:
+                try:
+                    self.memory_patch_worker.stop()
+                    self._append_inject_log("Memory patch worker stopped: process removed.")
+                except Exception:
+                    pass
+                self.memory_patch_worker = None
+        for line in str(message or "").splitlines() or [str(message or "")]:
+            if line:
+                self._analyze_status_line(line)
+
+    def on_embed_text_requested(self, request_id: str, text: str) -> None:
+        self._write_debug_event("embed.request", request_id=request_id, text=text, text_len=len(text or ""))
+        self._remember_embed_text(text)
+        src_lang = self.src_combo.currentData()
+        dst_lang = self.dst_combo.currentData()
+        key = f"{src_lang}|{dst_lang}|{text}"
+
+        queue_for_key = self.pending_embed_by_key.setdefault(key, [])
+        queue_for_key.append(request_id)
+
+        cached = self.translation_cache.get(key)
+        if cached is not None:
+            self._resolve_embed_requests_for_key(key, cached)
+            return
+        try:
+            trans = translate_text(src_lang, dst_lang, text)
+        except Exception:
+            trans = text
+        self.translation_cache[key] = trans
+        self._resolve_embed_requests_for_key(key, trans)
+
+    def _resolve_embed_requests_for_key(self, key: str, translation: str) -> None:
+        request_ids = self.pending_embed_by_key.pop(key, [])
+        if not request_ids:
+            return
+        worker = self.hook_worker
+        if worker is None:
+            return
+        for request_id in request_ids:
+            try:
+                worker.submit_embed_translation(request_id, translation)
+                self._write_debug_event(
+                    "embed.submit",
+                    request_id=request_id,
+                    translation=translation,
+                    translation_len=len(translation or ""),
+                )
+            except Exception:
+                pass
 
     # ---------------------- Misc UI handlers ----------------------
     def on_interval_changed(self) -> None:
@@ -784,7 +1204,7 @@ class MainWindow(QtWidgets.QWidget):
         src_lang = self.src_combo.currentData()
         dst_lang = self.dst_combo.currentData()
 
-        self.table.setItem(row, 2, QtWidgets.QTableWidgetItem("(translating...)"))
+        self.table.setItem(row, 1, QtWidgets.QTableWidgetItem("(translating...)"))
         self.translator.translate_async(src_lang, dst_lang, src_text, tag={"type": "manual", "row": row})
 
     def translate_and_update(self, src: str, dst: str, text: str) -> None:
@@ -800,37 +1220,59 @@ class MainWindow(QtWidgets.QWidget):
         key = f"{src}|{dst}|{text}"
         self.pending_translation_keys.discard(key)
         self.translation_cache[key] = trans
+        self._resolve_embed_requests_for_key(key, trans)
 
         if tag:
             ttype = tag.get("type")
             if ttype == "hook":
                 timestamp = tag.get("ts") or time.strftime("%H:%M:%S")
-                self.inject_log.appendPlainText(f"[{timestamp}] {text}\n -> {trans}\n")
+                self._write_debug_event(
+                    "translation.hook_ready",
+                    src=src,
+                    dst=dst,
+                    text=text,
+                    translation=trans,
+                    memory_worker_running=bool(self.memory_patch_worker),
+                )
+                if self.memory_patch_worker:
+                    try:
+                        if self._is_recent_qlie_text(text):
+                            self.memory_patch_worker.update_mapping(text, trans)
+                    except Exception:
+                        pass
+                if self._should_emit_hook_log(text, trans):
+                    self._append_inject_log(f"[{timestamp}] {text}\n -> {trans}\n")
+                self.display_signal.emit(trans)
                 row = tag.get("row")
                 if row is not None and 0 <= row < self.table.rowCount():
-                    self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(trans))
+                    self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(trans))
                     if 0 <= row < len(self.ocr_results):
                         self.ocr_results[row]["translation"] = trans
             elif ttype == "manual":
                 row = tag.get("row")
                 if row is not None and 0 <= row < self.table.rowCount():
-                    self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(trans))
+                    self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(trans))
                     if 0 <= row < len(self.ocr_results):
                         self.ocr_results[row]["translation"] = trans
+                self.display_signal.emit(trans)
+            elif ttype == "auto":
+                row = tag.get("row")
+                if row is not None and 0 <= row < self.table.rowCount():
+                    self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(trans))
+                    if 0 <= row < len(self.ocr_results):
+                        self.ocr_results[row]["translation"] = trans
+                else:
+                    for idx, item in enumerate(self.ocr_results):
+                        if str(item.get("text") or "") == text:
+                            if idx < self.table.rowCount():
+                                self.table.setItem(idx, 1, QtWidgets.QTableWidgetItem(trans))
+                            self.ocr_results[idx]["translation"] = trans
+                            break
+                self.display_signal.emit(trans)
+        else:
+            self.display_signal.emit(trans)
 
-        try:
-            overlay = []
-            src_lang = self.src_combo.currentData()
-            dst_lang = self.dst_combo.currentData()
-            for e in self.latest_ocr:
-                txt = e.get("text") or ""
-                key = f"{src_lang}|{dst_lang}|{txt}"
-                trans_text = self.translation_cache.get(key)
-                if trans_text:
-                    overlay.append({"text": txt, "bbox": e.get("bbox"), "translation": trans_text})
-            self.preview.update_overlay(overlay)
-        except Exception:
-            pass
+        self._refresh_preview_overlay()
 
     def apply_translation(self) -> None:
         idxs = self.table.selectionModel().selectedRows()
@@ -841,7 +1283,9 @@ class MainWindow(QtWidgets.QWidget):
         text = self.edit.toPlainText().strip()
         if r < len(self.ocr_results):
             self.ocr_results[r]["translation"] = text
-        self.table.setItem(r, 2, QtWidgets.QTableWidgetItem(text))
+        self.table.setItem(r, 1, QtWidgets.QTableWidgetItem(text))
+        if text:
+            self.display_signal.emit(text)
         self.status.setText("Applied translation to selected.")
 
     def save_translations(self) -> None:
@@ -863,6 +1307,20 @@ class MainWindow(QtWidgets.QWidget):
         if self.ocr_worker:
             self.ocr_worker.prefer_lang = self.src_combo.currentData()
 
+    def on_overlay_toggled(self, checked: bool) -> None:
+        if checked:
+            self.display_window.show()
+            self.display_window.raise_()
+            for row in range(self.table.rowCount() - 1, -1, -1):
+                item = self.table.item(row, 1)
+                if item:
+                    text = (item.text() or "").strip()
+                    if text and text != "(translating...)":
+                        self.display_signal.emit(text)
+                        break
+        else:
+            self.display_window.hide()
+
     def show_help(self) -> None:
         msg = (
             "<b>Game Translation Tool (OCR & Injection)</b><br><br>"
@@ -883,21 +1341,22 @@ class MainWindow(QtWidgets.QWidget):
         QtWidgets.QMessageBox.information(self, "Help", msg)
 
     def display_window_update(self, item: QtWidgets.QTableWidgetItem) -> None:
-        last_row = self.table.rowCount() - 1
-        if last_row >= 0:
-            trans_item = self.table.item(last_row, 2)
-            if trans_item:
-                self.display_signal.emit(trans_item.text())
+        if item is None:
+            return
+        if item.column() != 1:
+            return
+        text = (item.text() or "").strip()
+        if not text or text == "(translating...)":
+            return
+        self.display_signal.emit(text)
 
     def update_last_row_translation(self, text: str) -> None:
         last_row = self.table.rowCount() - 1
         if last_row >= 0:
-            # Ensure no accidental loop occurs (text edited -> table changed -> change text -> change table, etc.)
             self.table.blockSignals(True)
-            self.table.setItem(last_row, 2, QtWidgets.QTableWidgetItem(text))
+            self.table.setItem(last_row, 1, QtWidgets.QTableWidgetItem(text))
             self.table.blockSignals(False)
 
-    # Enable preprocessing within current running ocr_worker, if applicable
     def preprocessing_enable(self, _):
         if self.ocr_worker:
             self.ocr_worker.enable_preprocessing = self.enable_preprocessing_checkbox.isChecked()
@@ -921,6 +1380,7 @@ class DisplayWindow(QtWidgets.QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Display Window")
+        self.setMinimumSize(200, 80)
         self.resize(400, 200)
         self.setWindowFlags(
             QtCore.Qt.WindowType.WindowStaysOnTopHint |
@@ -929,7 +1389,14 @@ class DisplayWindow(QtWidgets.QWidget):
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMouseTracking(True)
 
-        destroyed = QtCore.Signal()
+        screen = QtWidgets.QApplication.primaryScreen()
+        if screen:
+            avail = screen.availableGeometry()
+            self.move(
+                avail.x() + (avail.width() - 400) // 2,
+                avail.y() + avail.height() - 250,
+            )
+
         self.drag_pos = None
         self.resizing = False
         self.resize_margin = 8
@@ -943,31 +1410,41 @@ class DisplayWindow(QtWidgets.QWidget):
             "Right-click to alter settings or close this window"
         )
 
-        # Initalize look of text display window with saved settings, if exists
-
-        # Noting that, since got rid of alignment option, manually set
         if os.path.exists("text_overlay_display_settings.json"):
             with open("text_overlay_display_settings.json", "r") as f:
                 data = json.load(f)
             try:
                 self.font_family = data["font"]
                 self.font_size = data["font_size"]
+                self.bold = data.get("bold", False)
+                self.italic = data.get("italic", False)
                 self.text_color = QtGui.QColor(data["text_color"])
                 self.bg_color = QtGui.QColor(data["background_color"])
                 self.bg_alpha = data["opacity"]
-                self.alignment = QtCore.Qt.AlignmentFlag.AlignLeft
+                alignment_name = data.get("alignment", "Left")
+                alignments = {
+                    "Left": QtCore.Qt.AlignmentFlag.AlignLeft,
+                    "Center": QtCore.Qt.AlignmentFlag.AlignHCenter,
+                    "Right": QtCore.Qt.AlignmentFlag.AlignRight,
+                    "Top": QtCore.Qt.AlignmentFlag.AlignTop,
+                    "Bottom": QtCore.Qt.AlignmentFlag.AlignBottom,
+                }
+                self.alignment = alignments.get(alignment_name, QtCore.Qt.AlignmentFlag.AlignLeft)
             except KeyError:
-                pass
-        
-        # Else, go with a default look
+                self._set_defaults()
         else:
-            self.font_family = "Arial"
-            self.font_size = 16
-            self.text_color = QtGui.QColor("white")
-            self.alignment = QtCore.Qt.AlignmentFlag.AlignLeft
-            self.bg_color = QtGui.QColor(0, 0, 0)
-            self.bg_alpha = 180
-        
+            self._set_defaults()
+
+    def _set_defaults(self) -> None:
+        self.font_family = "Arial"
+        self.font_size = 16
+        self.bold = False
+        self.italic = False
+        self.text_color = QtGui.QColor("white")
+        self.alignment = QtCore.Qt.AlignmentFlag.AlignLeft
+        self.bg_color = QtGui.QColor(0, 0, 0)
+        self.bg_alpha = 180
+
     def update_entries(self, entries) -> None:
         self.overlay_entries = entries
         self.update()
@@ -984,12 +1461,13 @@ class DisplayWindow(QtWidgets.QWidget):
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
 
-        # Overlay background
         painter.fillRect(self.rect(), QtGui.QColor(
             self.bg_color.red(), self.bg_color.green(), self.bg_color.blue(), self.bg_alpha
         ))
 
         font = QtGui.QFont(self.font_family, self.font_size)
+        font.setBold(self.bold)
+        font.setItalic(self.italic)
         painter.setFont(font)
         painter.setPen(self.text_color)
 
@@ -998,7 +1476,6 @@ class DisplayWindow(QtWidgets.QWidget):
         overlay_x = 10
         overlay_width = self.width() - 20
         
-        # If we have OCR entries, use them. Otherwise, show default instructions text.
         if self.overlay_entries:
             lines = []
             y_threshold = 15
@@ -1019,10 +1496,8 @@ class DisplayWindow(QtWidgets.QWidget):
                     lines.append({'text': text, 'y': y, 'h': h})
             text_to_draw = [l['text'] for l in lines]
         else:
-            
             text_to_draw = self.default_text.split("\n")
 
-        
         for i, line in enumerate(text_to_draw):
             rect = QtCore.QRect(overlay_x, 10 + i * line_height, overlay_width, line_height)
             painter.drawText(rect, self.alignment, line)
@@ -1063,7 +1538,6 @@ class DisplayWindow(QtWidgets.QWidget):
         elif action == minimize_action:
             self.showMinimized()
         elif action == exit_action:
-            self.destroyed.emit()
             self.close()
 
     def open_settings(self) -> None:
@@ -1072,8 +1546,6 @@ class DisplayWindow(QtWidgets.QWidget):
             return
         self.settings_window = SettingsWindow(self)
         self.settings_window.show()
-    
-
 
 class SettingsWindow(QtWidgets.QWidget):
     """Settings for DisplayWindow (works with overlay style)."""
@@ -1081,17 +1553,42 @@ class SettingsWindow(QtWidgets.QWidget):
         super().__init__()
         self.target = target
         self.setWindowTitle("Settings")
-        self.resize(350, 200)
+        self.resize(350, 400)
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint)
-        target.destroyed.connect(self.on_cancel)
-        
         self.original_font_family = target.font_family
         self.original_font_size = target.font_size
+        self.original_bold = target.bold
+        self.original_italic = target.italic
         self.original_text_color = QtGui.QColor(target.text_color)
         self.original_bg_color = QtGui.QColor(target.bg_color)
         self.original_bg_alpha = target.bg_alpha
+        self.original_alignment = target.alignment
 
         layout = QtWidgets.QVBoxLayout()
+
+        font_label = QtWidgets.QLabel("Font:")
+        self.font_combo = QtWidgets.QFontComboBox()
+        self.font_combo.setCurrentFont(QtGui.QFont(target.font_family))
+        self.font_combo.currentFontChanged.connect(self.font_changed)
+        layout.addWidget(font_label)
+        layout.addWidget(self.font_combo)
+
+        size_label = QtWidgets.QLabel("Font Size:")
+        self.size_spinner = QtWidgets.QSpinBox()
+        self.size_spinner.setRange(6, 40)
+        self.size_spinner.setValue(target.font_size)
+        self.size_spinner.valueChanged.connect(self.size_changed)
+        layout.addWidget(size_label)
+        layout.addWidget(self.size_spinner)
+
+        self.bold_checkbox = QtWidgets.QCheckBox("Bold?")
+        self.bold_checkbox.setChecked(target.bold)
+        self.bold_checkbox.stateChanged.connect(self.bold_changed)
+        self.italic_checkbox = QtWidgets.QCheckBox("Italic?")
+        self.italic_checkbox.setChecked(target.italic)
+        self.italic_checkbox.stateChanged.connect(self.italic_changed)
+        layout.addWidget(self.bold_checkbox)
+        layout.addWidget(self.italic_checkbox)
 
         self.text_color_button = QtWidgets.QPushButton("Choose text color")
         self.text_color_button.clicked.connect(self.color_changed)
@@ -1109,20 +1606,13 @@ class SettingsWindow(QtWidgets.QWidget):
         layout.addWidget(opacity_label)
         layout.addWidget(self.opacity_slider)
 
-        font_label = QtWidgets.QLabel("Font:")
-        self.font_combo = QtWidgets.QFontComboBox()
-        self.font_combo.setCurrentFont(QtGui.QFont(target.font_family))
-        self.font_combo.currentFontChanged.connect(self.font_changed)
-        layout.addWidget(font_label)
-        layout.addWidget(self.font_combo)
-
-        size_label = QtWidgets.QLabel("Font Size:")
-        self.size_spinner = QtWidgets.QSpinBox()
-        self.size_spinner.setRange(6, 40)
-        self.size_spinner.setValue(target.font_size)
-        self.size_spinner.valueChanged.connect(self.size_changed)
-        layout.addWidget(size_label)
-        layout.addWidget(self.size_spinner)
+        align_label = QtWidgets.QLabel("Alignment:")
+        self.align_combo = QtWidgets.QComboBox()
+        self.align_combo.addItems(["Left", "Center", "Right", "Top", "Bottom"])
+        self.align_combo.setCurrentText("Left")
+        self.align_combo.currentTextChanged.connect(self.alignment_changed)
+        layout.addWidget(align_label)
+        layout.addWidget(self.align_combo)
 
         button_layout = QtWidgets.QHBoxLayout()
         save_button = QtWidgets.QPushButton("Save")
@@ -1135,7 +1625,7 @@ class SettingsWindow(QtWidgets.QWidget):
         button_layout.addWidget(default_button)
         button_layout.addWidget(cancel_button)
         layout.addLayout(button_layout)
-        
+
         layout.addStretch()
         self.setLayout(layout)
 
@@ -1146,6 +1636,14 @@ class SettingsWindow(QtWidgets.QWidget):
 
     def size_changed(self, size: int):
         self.target.font_size = size
+        self.target.update()
+
+    def bold_changed(self, state: int):
+        self.target.bold = state == QtCore.Qt.CheckState.Checked.value
+        self.target.update()
+
+    def italic_changed(self, state: int):
+        self.target.italic = state == QtCore.Qt.CheckState.Checked.value
         self.target.update()
 
     def color_changed(self):
@@ -1167,20 +1665,44 @@ class SettingsWindow(QtWidgets.QWidget):
     def opacity_changed(self, value: int):
         self.target.bg_alpha = int((value/100)*255)
         self.target.update()
-   
+
+    def alignment_changed(self, text: str):
+        alignments = {
+            "Left": QtCore.Qt.AlignmentFlag.AlignLeft,
+            "Center": QtCore.Qt.AlignmentFlag.AlignHCenter,
+            "Right": QtCore.Qt.AlignmentFlag.AlignRight,
+            "Top": QtCore.Qt.AlignmentFlag.AlignTop,
+            "Bottom": QtCore.Qt.AlignmentFlag.AlignBottom
+        }
+        self.target.alignment = alignments.get(text, QtCore.Qt.AlignmentFlag.AlignLeft)
+        self.target.update()
+
     def on_save(self):
         self.original_font_family = self.target.font_family
         self.original_font_size = self.target.font_size
+        self.original_bold = self.target.bold
+        self.original_italic = self.target.italic
         self.original_text_color = QtGui.QColor(self.target.text_color)
         self.original_bg_color = QtGui.QColor(self.target.bg_color)
         self.original_bg_alpha = self.target.bg_alpha
+        self.original_alignment = self.target.alignment
 
+        alignment_map = {
+            QtCore.Qt.AlignmentFlag.AlignLeft: "Left",
+            QtCore.Qt.AlignmentFlag.AlignHCenter: "Center",
+            QtCore.Qt.AlignmentFlag.AlignRight: "Right",
+            QtCore.Qt.AlignmentFlag.AlignTop: "Top",
+            QtCore.Qt.AlignmentFlag.AlignBottom: "Bottom",
+        }
         data = {
             "text_color": self.original_text_color.name(),
             "background_color": self.original_bg_color.name(),
             "opacity": self.original_bg_alpha,
             "font": self.original_font_family,
-            "font_size": self.original_font_size
+            "font_size": self.original_font_size,
+            "bold": self.original_bold,
+            "italic": self.original_italic,
+            "alignment": alignment_map.get(self.original_alignment, "Left"),
         }
         with open("text_overlay_display_settings.json", "w") as f:
             json.dump(data, f, indent=2)
@@ -1189,30 +1711,37 @@ class SettingsWindow(QtWidgets.QWidget):
     def on_cancel(self):
         self.target.font_family = self.original_font_family
         self.target.font_size = self.original_font_size
+        self.target.bold = self.original_bold
+        self.target.italic = self.original_italic
         self.target.text_color = self.original_text_color
         self.target.bg_color = self.original_bg_color
         self.target.bg_alpha = self.original_bg_alpha
+        self.target.alignment = self.original_alignment
         self.target.update()
         self.close()
 
-    # Return text window settings to defined default
     def reset_to_default(self):
         self.target.font_family = "Arial"
         self.target.font_size = 16
+        self.target.bold = False
+        self.target.italic = False
         self.target.text_color = QtGui.QColor("white")
         self.target.bg_color = QtGui.QColor(0, 0, 0)
         self.target.bg_alpha = 180
+        self.target.alignment = QtCore.Qt.AlignmentFlag.AlignLeft
         self.font_combo.setCurrentFont(QtGui.QFont(self.target.font_family))
         self.size_spinner.setValue(self.target.font_size)
+        self.bold_checkbox.setChecked(self.target.bold)
+        self.italic_checkbox.setChecked(self.target.italic)
         self.opacity_slider.setValue(int(self.target.bg_alpha/255*100))
+        self.align_combo.setCurrentText("Left")
         self.target.update()
 
     def closeEvent(self, event) -> None:
-        self.on_cancel()
         event.accept()
 
 
-"""Window that appears after applying Manual OCR, or applying preprocessing to autOCR, for debug purposes"""
+"""Window that appears after applying Manual OCR, or applying preprocessing to autoOCR, for debug purposes"""
 class ImageWindow(QtWidgets.QWidget):
     def __init__(self, img1, img2, parent_window):
         import numpy as np
@@ -1221,8 +1750,6 @@ class ImageWindow(QtWidgets.QWidget):
         self.setWindowTitle("Manual OCR")
         self.parent_window = parent_window
 
-
-        #-------- Image Display ---------        
         fin_layout = QtWidgets.QVBoxLayout()
         img_layout = QtWidgets.QHBoxLayout()
 
@@ -1231,7 +1758,6 @@ class ImageWindow(QtWidgets.QWidget):
         
         temp_img1 = img1
         temp_img2 = img2
-        # Scaling size of image for display purposes
         temp_img1.thumbnail((600, 600), Image.LANCZOS)
         temp_img2.thumbnail((600, 600), Image.LANCZOS)
         qt_img1 = temp_img1.toqpixmap()
@@ -1256,7 +1782,6 @@ class ImageWindow(QtWidgets.QWidget):
         img_layout.addLayout(col1)
         img_layout.addLayout(col2)
 
-        #--------- Preprocessing Widgets -------------
         self.collapsible = QtWidgets.QWidget()
         preprocessing_label = QtWidgets.QLabel("Preprocessing Settings")
         preprocessing_layout = QtWidgets.QVBoxLayout()
@@ -1269,7 +1794,6 @@ class ImageWindow(QtWidgets.QWidget):
         max_brightness_row = QtWidgets.QHBoxLayout()
         binarize_row = QtWidgets.QHBoxLayout()
 
-        # Color min slider
         hue_min_label = QtWidgets.QLabel("Color Minimum:")
         hue_min_label.setFixedWidth(120)
         self.hue_min_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -1280,7 +1804,6 @@ class ImageWindow(QtWidgets.QWidget):
         min_hue_row.addWidget(self.hue_min_slider)
         preprocessing_layout.addLayout(min_hue_row)
         
-        # Saturation min slider
         saturation_min_label = QtWidgets.QLabel("Saturation Minimum:")
         saturation_min_label.setFixedWidth(120)
         self.saturation_min_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -1291,7 +1814,6 @@ class ImageWindow(QtWidgets.QWidget):
         min_saturation_row.addWidget(self.saturation_min_slider)
         preprocessing_layout.addLayout(min_saturation_row)
 
-        # Brightness min slider
         brightness_min_label = QtWidgets.QLabel("Brightness Minimum:")
         brightness_min_label.setFixedWidth(120)
         self.brightness_min_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -1302,7 +1824,6 @@ class ImageWindow(QtWidgets.QWidget):
         min_brightness_row.addWidget(self.brightness_min_slider)
         preprocessing_layout.addLayout(min_brightness_row)
 
-        # Color max slider
         hue_max_label = QtWidgets.QLabel("Color Maximum:")
         hue_max_label.setFixedWidth(120)
         self.hue_max_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -1313,7 +1834,6 @@ class ImageWindow(QtWidgets.QWidget):
         max_hue_row.addWidget(self.hue_max_slider)
         preprocessing_layout.addLayout(max_hue_row)
 
-        # Saturation max slider
         saturation_max_label = QtWidgets.QLabel("Saturation Maximum:")
         saturation_max_label.setFixedWidth(120)
         self.saturation_max_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -1324,7 +1844,6 @@ class ImageWindow(QtWidgets.QWidget):
         max_saturation_row.addWidget(self.saturation_max_slider)
         preprocessing_layout.addLayout(max_saturation_row)
 
-        # Brightness max slider
         brightness_max_label = QtWidgets.QLabel("Brightness Maximum:")
         brightness_max_label.setFixedWidth(120)
         self.brightness_max_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -1335,7 +1854,6 @@ class ImageWindow(QtWidgets.QWidget):
         max_brightness_row.addWidget(self.brightness_max_slider)
         preprocessing_layout.addLayout(max_brightness_row)
 
-        # Binarize slider
         binarize_label = QtWidgets.QLabel("Binarize:")
         binarize_label.setFixedWidth(120)
         self.binarize_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -1346,7 +1864,6 @@ class ImageWindow(QtWidgets.QWidget):
         binarize_row.addWidget(self.binarize_slider)
         preprocessing_layout.addLayout(binarize_row)
         
-        # Calls to change slider label based on current slider value
         self.hue_min_slider.valueChanged.connect(self.sliders_changed)
         self.saturation_min_slider.valueChanged.connect(self.sliders_changed)
         self.brightness_min_slider.valueChanged.connect(self.sliders_changed)
@@ -1355,27 +1872,22 @@ class ImageWindow(QtWidgets.QWidget):
         self.brightness_max_slider.valueChanged.connect(self.sliders_changed)
         self.binarize_slider.valueChanged.connect(self.sliders_changed)
         
-        # Save button, saves current preprocessing settings (won't save unless pressed)
         self.save_button = QtWidgets.QPushButton("Save preprocessing settings")
         self.save_button.clicked.connect(self.save_preprocessing_values)
         preprocessing_layout.addWidget(self.save_button)
 
-        # Default button (returning sliders to default values (0 for mins, 255 for max (except for color, max is 179))
         self.default_button = QtWidgets.QPushButton("Reset to default")
         self.default_button.clicked.connect(self.reset_to_default)
         preprocessing_layout.addWidget(self.default_button)
 
-        # Apply button, used to reapply OCR with current preprocessing settings on taken image
         self.reapply_button = QtWidgets.QPushButton("Reapply OCR")
         self.reapply_button.clicked.connect(self.reapply_OCR)
         preprocessing_layout.addWidget(self.reapply_button)
 
-        # Cancel button, closes menu
         self.cancel_button = QtWidgets.QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.cancel_preprocessing)
         preprocessing_layout.addWidget(self.cancel_button)
         
-        # Instantiate sliders with preprocessing__settings if possible
         if os.path.exists("preprocessing_settings.json"):
             with open("preprocessing_settings.json", "r") as f:
                 data = json.load(f)
@@ -1393,15 +1905,13 @@ class ImageWindow(QtWidgets.QWidget):
         self.collapsible.setLayout(preprocessing_layout)
         self.collapsible.setVisible(False)
 
-        # Button to toggle collapsible
-        self.show_preprocessing_settings_btn = QtWidgets.QPushButton("Show preprocessing settings ▼")
+        self.show_preprocessing_settings_btn = QtWidgets.QPushButton("Show preprocessing settings \u25bc")
         self.show_preprocessing_settings_btn.clicked.connect(self.show_preprocesssing_settings)
         fin_layout.addLayout(img_layout)
         fin_layout.addWidget(self.show_preprocessing_settings_btn)
         fin_layout.addWidget(self.collapsible)
         self.setLayout(fin_layout)
 
-    # Function to save current values of preprocessing sliders to preprocessing_settings.json
     def save_preprocessing_values(self):
         data = {
             "h_min": self.hue_min_slider.value(),
@@ -1415,11 +1925,9 @@ class ImageWindow(QtWidgets.QWidget):
         with open("preprocessing_settings.json", "w") as f:
             json.dump(data, f, indent=2)
 
-    # Close with cancel button
     def cancel_preprocessing(self):
         self.close()
 
-    # Reset preprocessing settings to default
     def reset_to_default(self):
         self.hue_min_slider.setValue(0)
         self.saturation_min_slider.setValue(0)
@@ -1429,7 +1937,6 @@ class ImageWindow(QtWidgets.QWidget):
         self.brightness_max_slider.setValue(255)
         self.binarize_slider.setValue(0)
 
-    # Changes image of image window and displayed slider value
     def sliders_changed(self):
         self.h_min.setText(str(self.hue_min_slider.value()))
         self.s_min.setText(str(self.saturation_min_slider.value()))
@@ -1445,7 +1952,6 @@ class ImageWindow(QtWidgets.QWidget):
             self.binarize_slider.value()
         )
 
-    # Update preprocessed image of window based on sliders
     def updateImage(self, h_min, s_min, v_min, h_max, s_max, v_max, binarize):
         from PIL import Image
         self.processed_image = removeBackground(self.original_image, h_min, s_min, v_min, h_max, s_max, v_max, binarize)
@@ -1454,22 +1960,29 @@ class ImageWindow(QtWidgets.QWidget):
         new_display_image = new_display_image.toqpixmap()
         self.label2.setPixmap(new_display_image)
 
-    # Toggle whether or not preprocessing settings are visible
     def show_preprocesssing_settings(self):
         visible = self.collapsible.isVisible()
         self.collapsible.setVisible(not visible)
-        self.show_preprocessing_settings_btn.setText("Collapse preprocessing settings ▲" if visible else "Show preprocessing settings ▼")
+        self.show_preprocessing_settings_btn.setText("Collapse preprocessing settings \u25b2" if visible else "Show preprocessing settings \u25bc")
         self.adjustSize()
 
-    # Try running preprocessed image of current snapshot into OCR again with current settings (not necessarily saved)
     def reapply_OCR(self):
         try:
-            data, _ = ocr_image_data(self.processed_image, self.parent_window.src_combo.currentData(), enable_preprocessing=False)
+            result = ocr_image_data(self.processed_image, self.parent_window.src_combo.currentData(), enable_preprocessing=False)
+            if isinstance(result, tuple):
+                data = result[0]
+            else:
+                data = result
             self.parent_window.on_ocr_ready(data)
-        except:
+        except Exception:
             pass
 
 def main() -> None:
+    if hasattr(QtCore.Qt, "AA_EnableHighDpiScaling"):
+        QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
+    if hasattr(QtCore.Qt, "AA_UseHighDpiPixmaps"):
+        QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
+
     app = QtWidgets.QApplication(sys.argv)
     win2 = DisplayWindow()
     win = MainWindow(win2)

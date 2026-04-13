@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, Tuple, Optional
 
 import ctypes
-from ctypes import wintypes, c_bool, c_int, c_uint32, c_uint64, c_uint8, c_void_p, c_wchar_p, c_char_p
+from ctypes import wintypes, c_bool, c_int, c_uint32, c_uint64, c_uint8, c_void_p, c_wchar_p, c_char_p, c_float
 
 from PySide6 import QtCore
 
@@ -151,6 +151,7 @@ I18NQueryCallback = ctypes.CFUNCTYPE(c_void_p, c_wchar_p)
 class LunaHookWorker(QtCore.QThread):
     text_ready = QtCore.Signal(str)
     status = QtCore.Signal(str)
+    embed_text_requested = QtCore.Signal(str, str)
 
     def __init__(
         self,
@@ -162,6 +163,7 @@ class LunaHookWorker(QtCore.QThread):
         max_history_size: int = 1000000,
         auto_pc_hooks: bool = True,
         flush_delay_ms: int = 120,
+        enable_embed: bool = False,
         parent: Optional[QtCore.QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -174,12 +176,25 @@ class LunaHookWorker(QtCore.QThread):
         self._max_history_size = int(max_history_size)
         self._auto_pc_hooks = bool(auto_pc_hooks)
         self._flush_delay = max(10, int(flush_delay_ms)) / 1000.0
+        self._enable_embed = bool(enable_embed)
+        self._embed_timeout_ms = int(os.environ.get("LUNA_EMBED_TIMEOUT_MS", "12000"))
+        self._embed_max_line = int(os.environ.get("LUNA_EMBED_MAX_LINE", "42"))
 
         self._pending: Dict[Tuple[int, int, int, int], Tuple[str, float]] = {}
         self._last_emitted: Dict[Tuple[int, int, int, int], str] = {}
         self._pending_lock = threading.Lock()
-        self._sync_queue: "queue.Queue[ThreadParam]" = queue.Queue()
+        self._sync_queue: "queue.Queue[tuple[ThreadParam, bool]]" = queue.Queue()
         self._synced_keys: set[Tuple[int, int, int, int]] = set()
+
+        self._embed_pending_lock = threading.Lock()
+        self._embed_pending: Dict[str, Tuple[ThreadParam, str]] = {}
+        self._embed_submit_queue: "queue.Queue[tuple[ThreadParam, str, str]]" = queue.Queue()
+        self._embed_seq = 0
+        self._embed_enabled_keys: set[Tuple[int, int, int, int]] = set()
+        self._embed_hook_addrs: Dict[int, set[int]] = {}
+        self._embed_primary_addr: Dict[int, int] = {}
+        self._ctx_pairs_by_pid: Dict[int, set[Tuple[int, int]]] = {}
+        self._ctx_pairs_by_pid_code: Dict[Tuple[int, str], set[Tuple[int, int]]] = {}
 
         self._luna = None
         self._callbacks = []
@@ -231,6 +246,7 @@ class LunaHookWorker(QtCore.QThread):
             while self._running:
                 self._flush_pending()
                 self._flush_sync_queue()
+                self._flush_embed_queue()
                 self.msleep(50)
         except Exception as e:
             self.status.emit(f"Luna hook error: {e}")
@@ -326,6 +342,10 @@ class LunaHookWorker(QtCore.QThread):
             "--flush-delay-ms",
             str(int(self._flush_delay * 1000)),
         ]
+        if self._enable_embed:
+            cmd.append("--enable-embed")
+        if self._auto_pc_hooks:
+            cmd.append("--auto-pc-hooks")
         env = os.environ.copy()
         env = os.environ.copy()
         env.setdefault("PYTHONUTF8", "1")
@@ -385,7 +405,44 @@ class LunaHookWorker(QtCore.QThread):
             if msg:
                 self.status.emit(msg)
             return
+        if mtype == "embed_request":
+            request_id = payload.get("request_id") or ""
+            text = payload.get("text") or ""
+            if request_id and text:
+                self.embed_text_requested.emit(request_id, text)
+            return
+        if mtype == "debug":
+            try:
+                self.status.emit("[helper-debug] " + json.dumps(payload, ensure_ascii=False))
+            except Exception:
+                self.status.emit(str(payload))
+            return
         self.status.emit(line)
+
+    def submit_embed_translation(self, request_id: str, translation: str) -> None:
+        if not request_id:
+            return
+        if self._helper_mode:
+            proc = self._helper_proc
+            if not proc or not proc.stdin:
+                return
+            payload = {
+                "type": "embed_result",
+                "request_id": request_id,
+                "translation": translation or "",
+            }
+            try:
+                proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                proc.stdin.flush()
+            except Exception:
+                pass
+            return
+        with self._embed_pending_lock:
+            pending = self._embed_pending.pop(request_id, None)
+        if not pending:
+            return
+        tp, src_text = pending
+        self._embed_submit_queue.put((tp, src_text, translation or ""))
 
     def _stop_helper(self) -> None:
         proc = self._helper_proc
@@ -430,6 +487,26 @@ class LunaHookWorker(QtCore.QThread):
         self._luna.Luna_CheckIfNeedInject.restype = c_bool
         self._luna.Luna_DetachProcess.argtypes = (wintypes.DWORD,)
         self._luna.Luna_ResetLang.argtypes = ()
+        if hasattr(self._luna, "Luna_EmbedSettings"):
+            self._luna.Luna_EmbedSettings.argtypes = (
+                wintypes.DWORD,
+                c_uint32,
+                c_uint8,
+                c_bool,
+                c_wchar_p,
+                c_uint32,
+                c_bool,
+                c_bool,
+                c_bool,
+                c_float,
+            )
+        if hasattr(self._luna, "Luna_UseEmbed"):
+            self._luna.Luna_UseEmbed.argtypes = (ThreadParam, c_bool)
+        if hasattr(self._luna, "Luna_CheckIsUsingEmbed"):
+            self._luna.Luna_CheckIsUsingEmbed.argtypes = (ThreadParam,)
+            self._luna.Luna_CheckIsUsingEmbed.restype = c_bool
+        if hasattr(self._luna, "Luna_EmbedCallback"):
+            self._luna.Luna_EmbedCallback.argtypes = (ThreadParam, c_wchar_p, c_wchar_p)
         if hasattr(self._luna, "Luna_AllocString"):
             self._luna.Luna_AllocString.argtypes = (c_wchar_p,)
             self._luna.Luna_AllocString.restype = c_void_p
@@ -473,9 +550,32 @@ class LunaHookWorker(QtCore.QThread):
 
         self.status.emit("Luna: Luna_ConnectProcess...")
         self._luna.Luna_ConnectProcess(pid)
+        self._apply_embed_settings(pid)
         self.status.emit("Luna: Luna_CheckIfNeedInject...")
         if self._luna.Luna_CheckIfNeedInject(pid):
             self._inject(pid, target_bit)
+
+    def _apply_embed_settings(self, pid: int) -> None:
+        if not self._enable_embed:
+            return
+        if not self._luna or not hasattr(self._luna, "Luna_EmbedSettings"):
+            return
+        try:
+            self._luna.Luna_EmbedSettings(
+                pid,
+                max(500, self._embed_timeout_ms),
+                2,
+                False,
+                "",
+                0,
+                True,
+                False,
+                False,
+                0.0,
+            )
+            self.status.emit("Embed translation enabled.")
+        except Exception as e:
+            self.status.emit(f"Failed to apply embed settings: {e}")
 
     def _inject(self, pid: int, target_bit: str) -> None:
         proxy = str(self._luna_paths["proxy"][target_bit])
@@ -506,7 +606,8 @@ class LunaHookWorker(QtCore.QThread):
             for _ in range(25):
                 time.sleep(0.2)
                 try:
-                    if not self._luna.Luna_CheckIfNeedInject(pid):
+                    luna = self._luna
+                    if luna and (not luna.Luna_CheckIfNeedInject(pid)):
                         self.status.emit("Injected LunaHook DLL (elevated).")
                         return
                 except Exception:
@@ -543,7 +644,7 @@ class LunaHookWorker(QtCore.QThread):
             return
         try:
             while True:
-                tp = self._sync_queue.get_nowait()
+                tp, is_embedable = self._sync_queue.get_nowait()
                 key = (int(tp.processId), int(tp.addr), int(tp.ctx), int(tp.ctx2))
                 if key in self._synced_keys:
                     continue
@@ -552,8 +653,80 @@ class LunaHookWorker(QtCore.QThread):
                     self._luna.Luna_SyncThread(tp, True)
                 except Exception:
                     pass
+                if self._enable_embed and is_embedable and hasattr(self._luna, "Luna_UseEmbed"):
+                    try:
+                        self._luna.Luna_UseEmbed(tp, True)
+                    except Exception:
+                        pass
         except queue.Empty:
             return
+
+    def _flush_embed_queue(self) -> None:
+        if not self._luna or not hasattr(self._luna, "Luna_EmbedCallback"):
+            return
+        try:
+            while True:
+                tp, src_text, trans = self._embed_submit_queue.get_nowait()
+                try:
+                    trans = self._split_embed_lines(trans)
+                    src_raw = src_text or ""
+                    src_clean = self._clean_text(src_raw)
+                    trans_send = trans or ""
+                    pid_i = int(tp.processId)
+                    embed_addr = self._embed_primary_addr.get(pid_i)
+
+                    targets = []
+                    if embed_addr:
+                        tp_embed = ThreadParam()
+                        tp_embed.processId = int(tp.processId)
+                        tp_embed.addr = int(embed_addr)
+                        tp_embed.ctx = int(tp.ctx)
+                        tp_embed.ctx2 = int(tp.ctx2)
+                        targets.append(tp_embed)
+                    targets.append(tp)
+
+                    seen = set()
+                    for target in targets:
+                        k = (int(target.processId), int(target.addr), int(target.ctx), int(target.ctx2))
+                        if k in seen:
+                            continue
+                        seen.add(k)
+                        try:
+                            self._luna.Luna_EmbedCallback(target, src_raw, trans_send)
+                        except Exception:
+                            pass
+                        if src_clean and src_clean != src_raw:
+                            try:
+                                self._luna.Luna_EmbedCallback(target, src_clean, trans_send)
+                            except Exception:
+                                pass
+
+                    if targets:
+                        try:
+                            self._luna.Luna_EmbedCallback(targets[0], "", trans_send)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except queue.Empty:
+            return
+
+    def _split_embed_lines(self, text: str) -> str:
+        if not text:
+            return ""
+        limit = self._embed_max_line
+        if limit <= 0:
+            return text
+        chunks = []
+        for line in str(text).split("\n"):
+            if not line:
+                chunks.append("")
+                continue
+            while len(line) > limit:
+                chunks.append(line[:limit])
+                line = line[limit:]
+            chunks.append(line)
+        return "\n".join(chunks)
 
     def _detach(self) -> None:
         if not self._luna or self._pid is None:
@@ -565,12 +738,14 @@ class LunaHookWorker(QtCore.QThread):
 
     # Callbacks
     def _on_proc_connect(self, pid):
-        if self._auto_pc_hooks and not self._safe_mode:
+        luna = self._luna
+        if self._auto_pc_hooks and (not self._safe_mode) and luna:
             try:
-                self._luna.Luna_InsertPCHooks(pid, 0)
-                self._luna.Luna_InsertPCHooks(pid, 1)
+                luna.Luna_InsertPCHooks(pid, 0)
+                luna.Luna_InsertPCHooks(pid, 1)
             except Exception:
                 pass
+            self._apply_embed_settings(pid)
         self.status.emit(f"Process connected: {pid}")
 
     def _on_proc_remove(self, pid):
@@ -584,7 +759,35 @@ class LunaHookWorker(QtCore.QThread):
             tp_copy.addr = int(tp.addr)
             tp_copy.ctx = int(tp.ctx)
             tp_copy.ctx2 = int(tp.ctx2)
-            self._sync_queue.put(tp_copy)
+            pid_i = int(tp_copy.processId)
+            ctx_pair = (int(tp_copy.ctx), int(tp_copy.ctx2))
+            self._ctx_pairs_by_pid.setdefault(pid_i, set()).add(ctx_pair)
+            hc_text = ""
+            hn_text = ""
+            try:
+                hc_text = str(hc or "")
+            except Exception:
+                hc_text = ""
+            try:
+                if isinstance(hn, (bytes, bytearray)):
+                    hn_text = hn.decode("utf-8", errors="ignore")
+                else:
+                    hn_text = str(hn or "")
+            except Exception:
+                hn_text = ""
+            hc_low = hc_text.lower()
+            hn_low = hn_text.lower()
+            force_embed = ("embed" in hc_low) or ("embed" in hn_low)
+            force_embed = force_embed or ("qlie" in hc_low) or ("qlie" in hn_low)
+            force_embed = force_embed or (int(tp_copy.addr) in self._embed_hook_addrs.get(int(tp_copy.processId), set()))
+            if force_embed:
+                for code_key in {hc_text.strip().lower(), hn_text.strip().lower()}:
+                    if code_key:
+                        self._ctx_pairs_by_pid_code.setdefault((pid_i, code_key), set()).add(ctx_pair)
+                self.status.emit(
+                    f"Embed candidate hook: pid={int(tp_copy.processId)} addr=0x{int(tp_copy.addr):X} hc={hc_text}"
+                )
+            self._sync_queue.put((tp_copy, bool(isembedable) or force_embed))
         except Exception:
             pass
 
@@ -598,26 +801,163 @@ class LunaHookWorker(QtCore.QThread):
             text = self._clean_text(output)
             if not text:
                 return
+            raw_text = "" if output is None else str(output)
             key = (int(tp.processId), int(tp.addr), int(tp.ctx), int(tp.ctx2))
             with self._pending_lock:
                 self._pending[key] = (text, time.time())
+            embed_addrs = self._embed_hook_addrs.get(int(tp.processId), set())
+            hc_low = ""
+            hn_low = ""
+            try:
+                hc_low = str(hc or "").lower()
+            except Exception:
+                hc_low = ""
+            try:
+                if isinstance(hn, (bytes, bytearray)):
+                    hn_low = hn.decode("utf-8", errors="ignore").lower()
+                else:
+                    hn_low = str(hn or "").lower()
+            except Exception:
+                hn_low = ""
+            is_qlie_output = ("qlie" in hc_low) or ("qlie" in hn_low)
+            luna = self._luna
+            if (
+                self._enable_embed
+                and (int(tp.addr) in embed_addrs or is_qlie_output)
+                and luna
+                and hasattr(luna, "Luna_UseEmbed")
+                and key not in self._embed_enabled_keys
+            ):
+                try:
+                    tp_enable = ThreadParam()
+                    tp_enable.processId = int(tp.processId)
+                    tp_enable.addr = int(tp.addr)
+                    tp_enable.ctx = int(tp.ctx)
+                    tp_enable.ctx2 = int(tp.ctx2)
+                    luna.Luna_UseEmbed(tp_enable, True)
+                    self._embed_enabled_keys.add(key)
+                    using = None
+                    if hasattr(luna, "Luna_CheckIsUsingEmbed"):
+                        try:
+                            using = bool(luna.Luna_CheckIsUsingEmbed(tp_enable))
+                        except Exception:
+                            using = None
+                    if using is None:
+                        self.status.emit(f"Embed enabled on output thread: {key}")
+                    else:
+                        self.status.emit(f"Embed enabled on output thread: {key} using={using}")
+                except Exception:
+                    pass
+            if self._enable_embed and (int(tp.addr) in embed_addrs or is_qlie_output):
+                tp_copy = ThreadParam()
+                tp_copy.processId = int(tp.processId)
+                tp_copy.addr = int(tp.addr)
+                tp_copy.ctx = int(tp.ctx)
+                tp_copy.ctx2 = int(tp.ctx2)
+                self._embed_seq += 1
+                request_id = "out-{}-{}-{}-{}-{}".format(
+                    int(tp_copy.processId),
+                    int(tp_copy.addr),
+                    int(tp_copy.ctx),
+                    int(tp_copy.ctx2),
+                    self._embed_seq,
+                )
+                with self._embed_pending_lock:
+                    self._embed_pending[request_id] = (tp_copy, raw_text)
+                self.embed_text_requested.emit(request_id, text)
         except Exception:
             return
 
     def _on_host_info(self, code, msg):
         if msg:
-            self.status.emit(str(msg))
+            m = str(msg)
+            try:
+                low = m.lower()
+                if "embedqlie" in low and self._pid:
+                    hit = re.search(r"([0-9a-fA-F]{6,16})", m)
+                    if hit:
+                        addr_i = int(hit.group(1), 16)
+                        pid_i = int(self._pid)
+                        self._embed_primary_addr[pid_i] = addr_i
+                        self._embed_hook_addrs.setdefault(pid_i, set()).add(addr_i)
+                        self.status.emit(f"Embed primary addr bound from host info: pid={pid_i} addr=0x{addr_i:X}")
+            except Exception:
+                pass
+            self.status.emit(m)
 
     def _on_hook_insert(self, pid, addr, hcode):
+        try:
+            hcode_text = str(hcode or "")
+            hcode_low = hcode_text.lower()
+            if ("embed" in hcode_low) or ("qlie" in hcode_low):
+                pid_i = int(pid)
+                addr_i = int(addr)
+                addrs = self._embed_hook_addrs.setdefault(pid_i, set())
+                addrs.add(addr_i)
+                if ("embedqlie" in hcode_low) or (pid_i not in self._embed_primary_addr):
+                    self._embed_primary_addr[pid_i] = addr_i
+                self.status.emit(
+                    f"Embed/QLIE hook detected: pid={pid_i} addr=0x{addr_i:X} code={hcode_text}"
+                )
+                luna = self._luna
+                if self._enable_embed and luna and hasattr(luna, "Luna_UseEmbed"):
+                    code_key = hcode_text.strip().lower()
+                    ctx_pairs = set(self._ctx_pairs_by_pid_code.get((pid_i, code_key), set()))
+                    if not ctx_pairs:
+                        ctx_pairs = set(self._ctx_pairs_by_pid.get(pid_i, set()))
+                    used = 0
+                    for ctx, ctx2 in list(ctx_pairs)[:256]:
+                        try:
+                            tp_bind = ThreadParam()
+                            tp_bind.processId = pid_i
+                            tp_bind.addr = addr_i
+                            tp_bind.ctx = int(ctx)
+                            tp_bind.ctx2 = int(ctx2)
+                            luna.Luna_UseEmbed(tp_bind, True)
+                            used += 1
+                        except Exception:
+                            pass
+                    if used:
+                        self.status.emit(
+                            f"Embed bound contexts: pid={pid_i} addr=0x{addr_i:X} count={used}"
+                        )
+        except Exception:
+            pass
         return
 
     def _on_embed(self, text, tp):
-        return
+        if not self._enable_embed:
+            return
+        raw_text = "" if text is None else str(text)
+        cleaned = self._clean_text(text)
+        if not cleaned:
+            return
+        try:
+            tp_copy = ThreadParam()
+            tp_copy.processId = int(tp.processId)
+            tp_copy.addr = int(tp.addr)
+            tp_copy.ctx = int(tp.ctx)
+            tp_copy.ctx2 = int(tp.ctx2)
+            self._embed_seq += 1
+            request_id = "{}-{}-{}-{}-{}".format(
+                int(tp_copy.processId),
+                int(tp_copy.addr),
+                int(tp_copy.ctx),
+                int(tp_copy.ctx2),
+                self._embed_seq,
+            )
+            with self._embed_pending_lock:
+                self._embed_pending[request_id] = (tp_copy, raw_text)
+            self.status.emit(f"Embed request: {request_id}")
+            self.embed_text_requested.emit(request_id, cleaned)
+        except Exception:
+            return
 
     def _on_i18n_query(self, querytext):
         try:
-            if hasattr(self._luna, "Luna_AllocString"):
-                return self._luna.Luna_AllocString(querytext)
+            luna = self._luna
+            if luna and hasattr(luna, "Luna_AllocString"):
+                return luna.Luna_AllocString(querytext)
         except Exception:
             pass
         return None
