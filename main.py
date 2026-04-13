@@ -308,7 +308,21 @@ class MainWindow(QtWidgets.QWidget):
     def __init__(self, display_window: 'DisplayWindow') -> None:
         super().__init__()
         self.setWindowTitle("Game Translation Tool")
-        self.resize(1200, 700)
+        self.setMinimumSize(800, 500)
+
+        screen = QtWidgets.QApplication.primaryScreen()
+        if screen:
+            avail = screen.availableGeometry()
+            w = min(1200, int(avail.width() * 0.75))
+            h = min(700, int(avail.height() * 0.75))
+            self.resize(w, h)
+            self.move(
+                avail.x() + (avail.width() - w) // 2,
+                avail.y() + (avail.height() - h) // 2,
+            )
+        else:
+            self.resize(1200, 700)
+
         self.display_window = display_window
         self.translate_signal.connect(self.translate_and_update)
 
@@ -346,8 +360,8 @@ class MainWindow(QtWidgets.QWidget):
         root = QtWidgets.QHBoxLayout(self)
         left_col = QtWidgets.QVBoxLayout()
         right_col = QtWidgets.QVBoxLayout()
-        root.addLayout(left_col, 1)
-        root.addLayout(right_col, 1)
+        root.addLayout(left_col, 3)
+        root.addLayout(right_col, 2)
 
         bar = QtWidgets.QHBoxLayout()
         self.win_list = WindowComboBox()
@@ -462,6 +476,7 @@ class MainWindow(QtWidgets.QWidget):
         right_col.addWidget(self.table, 1)
 
         self.edit = QtWidgets.QPlainTextEdit()
+        self.edit.setMaximumHeight(100)
         right_col.addWidget(self.edit)
 
         btn_row = QtWidgets.QHBoxLayout()
@@ -1366,6 +1381,7 @@ class DisplayWindow(QtWidgets.QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Display Window")
+        self.setMinimumSize(200, 80)
         self.resize(400, 200)
         self.setWindowFlags(
             QtCore.Qt.WindowType.WindowStaysOnTopHint |
@@ -1373,6 +1389,14 @@ class DisplayWindow(QtWidgets.QWidget):
         )
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMouseTracking(True)
+
+        screen = QtWidgets.QApplication.primaryScreen()
+        if screen:
+            avail = screen.availableGeometry()
+            self.move(
+                avail.x() + (avail.width() - 400) // 2,
+                avail.y() + avail.height() - 250,
+            )
 
         self.drag_pos = None
         self.resizing = False
@@ -1955,6 +1979,11 @@ class ImageWindow(QtWidgets.QWidget):
             pass
 
 def main() -> None:
+    if hasattr(QtCore.Qt, "AA_EnableHighDpiScaling"):
+        QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
+    if hasattr(QtCore.Qt, "AA_UseHighDpiPixmaps"):
+        QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
+
     app = QtWidgets.QApplication(sys.argv)
     win2 = DisplayWindow()
     win = MainWindow(win2)
