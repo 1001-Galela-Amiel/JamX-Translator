@@ -440,9 +440,11 @@ class MainWindow(QtWidgets.QWidget):
 
         btn_row = QtWidgets.QHBoxLayout()
         self.apply_btn = QtWidgets.QPushButton("Apply")
+        self.settings_button = QtWidgets.QPushButton("Settings")
         self.save_btn = QtWidgets.QPushButton("Save")
         self.help_btn = QtWidgets.QPushButton("Help")
         btn_row.addWidget(self.apply_btn)
+        btn_row.addWidget(self.settings_button)
         btn_row.addWidget(self.save_btn)
         btn_row.addWidget(self.help_btn)
         right_col.addLayout(btn_row)
@@ -454,6 +456,7 @@ class MainWindow(QtWidgets.QWidget):
         self.ocr_spin.valueChanged.connect(self.on_interval_changed)
         self.apply_btn.clicked.connect(self.apply_translation)
         self.save_btn.clicked.connect(self.save_translations)
+        self.settings_button.clicked.connect(self.open_settings)
         self.help_btn.clicked.connect(self.show_help)
         self.text_color_btn.clicked.connect(self.choose_text_overlay_color)
         self.src_combo.currentIndexChanged.connect(self.on_src_lang_changed)
@@ -899,6 +902,10 @@ class MainWindow(QtWidgets.QWidget):
         if self.ocr_worker:
             self.ocr_worker.enable_preprocessing = self.enable_preprocessing_checkbox.isChecked()
     
+    #def open_settings(self):
+    #    self.settings_window = SettingsWindow(self)
+    #    self.settings_window.show()
+
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self.display_window.close()
         self.stop_capture()
