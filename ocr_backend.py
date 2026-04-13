@@ -3,6 +3,8 @@ import time
 import numpy as np
 from PIL import Image
 from rapidocr_onnxruntime import RapidOCR
+from image_preprocessor import removeBackground
+import json
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(APP_DIR, "logs")
@@ -12,7 +14,7 @@ _ocr_engine = RapidOCR()
 _last_debug_save = 0.0
 
 
-def ocr_image_data(pil_image, prefer_lang_code="auto"):
+def ocr_image_data(pil_image, prefer_lang_code="auto", enable_preprocessing=False):
     """
     Runs OCR on the given image bytes and returns detected text entries.
     It decodes the bytes into an image, passes it through RapidOCR, converts polygon boxes into simple rectangles, and builds a list of text and bounding box dictionaries.
@@ -27,8 +29,12 @@ def ocr_image_data(pil_image, prefer_lang_code="auto"):
             pass
         _last_debug_save = now
 
-    img = np.array(pil_image)
 
+    img = np.array(pil_image)
+    """If preprocessing enabled, apply to ocr image"""
+    if(enable_preprocessing == True):
+        img = removeBackground(img)
+    
     if img.ndim == 3 and img.shape[1] > 1600:
         scale = 1600.0 / img.shape[1]
         new_h = int(img.shape[0] * scale)
@@ -43,6 +49,7 @@ def ocr_image_data(pil_image, prefer_lang_code="auto"):
 
     result, _ = _ocr_engine(img_bgr)
     entries = []
+    processed_img = Image.fromarray(img_bgr)
 
     if not result:
         return entries
@@ -73,4 +80,4 @@ def ocr_image_data(pil_image, prefer_lang_code="auto"):
             "lang": "unknown",
         })
 
-    return entries
+    return entries, processed_img

@@ -10,7 +10,6 @@ import subprocess
 import sys
 import threading
 import time
-import queue
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -20,7 +19,7 @@ if sys.maxsize > 2**32:
     sys.exit(1)
 
 
-from ctypes import wintypes, c_bool, c_int, c_uint32, c_uint64, c_uint8, c_void_p, c_wchar_p, c_char_p, c_float
+from ctypes import wintypes, c_bool, c_int, c_uint32, c_uint64, c_void_p, c_wchar_p, c_char_p
 
 
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -33,22 +32,6 @@ def _emit_status(message: str) -> None:
 
 def _emit_text(text: str) -> None:
     print(json.dumps({"type": "text", "text": text}, ensure_ascii=False), flush=True)
-
-
-def _emit_embed_request(request_id: str, text: str) -> None:
-    print(
-        json.dumps(
-            {"type": "embed_request", "request_id": request_id, "text": text},
-            ensure_ascii=False,
-        ),
-        flush=True,
-    )
-
-
-def _emit_debug(event: str, **payload) -> None:
-    data = {"type": "debug", "event": event}
-    data.update(payload)
-    print(json.dumps(data, ensure_ascii=False), flush=True)
 
 
 def _configure_stdout() -> None:
@@ -184,7 +167,6 @@ def main() -> int:
     parser.add_argument("--max-history-size", type=int, default=1000000)
     parser.add_argument("--auto-pc-hooks", action="store_true", default=False)
     parser.add_argument("--flush-delay-ms", type=int, default=120)
-    parser.add_argument("--enable-embed", action="store_true", default=False)
     args = parser.parse_args()
 
     pid = args.pid
@@ -221,19 +203,6 @@ def main() -> int:
     flush_delay = max(10, int(args.flush_delay_ms)) / 1000.0
     recent_texts: Dict[str, float] = {}
     recent_window = 1.2
-    embed_pending_lock = threading.Lock()
-    embed_pending: Dict[str, Tuple[ThreadParam, str]] = {}
-    embed_result_queue: "queue.Queue[Tuple[str, str]]" = queue.Queue()
-    embed_seq = 0
-    native_embed_req_count = 0
-    out_embed_req_count = 0
-    unsupported_embed_warned = False
-    embed_enabled_keys: set[Tuple[int, int, int, int]] = set()
-    embed_primary_enabled_keys: set[Tuple[int, int, int, int]] = set()
-    embed_hook_addrs: Dict[int, set[int]] = {}
-    embed_primary_addr: Dict[int, int] = {}
-    ctx_pairs_by_pid: Dict[int, set[Tuple[int, int]]] = {}
-    ctx_pairs_by_pid_code: Dict[Tuple[int, str], set[Tuple[int, int]]] = {}
 
     def flush_loop():
         while not stop_event.is_set():
@@ -261,22 +230,9 @@ def main() -> int:
     def watch_stdin():
         try:
             for line in sys.stdin:
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                if stripped.lower() == "quit":
+                if line.strip().lower() == "quit":
                     stop_event.set()
                     break
-                try:
-                    payload = json.loads(stripped)
-                except Exception:
-                    continue
-                if payload.get("type") != "embed_result":
-                    continue
-                request_id = payload.get("request_id") or ""
-                trans = payload.get("translation") or ""
-                if request_id:
-                    embed_result_queue.put((request_id, trans))
         except Exception:
             stop_event.set()
 
@@ -300,51 +256,9 @@ def main() -> int:
     luna.Luna_CheckIfNeedInject.restype = c_bool
     luna.Luna_DetachProcess.argtypes = (wintypes.DWORD,)
     luna.Luna_ResetLang.argtypes = ()
-    if hasattr(luna, "Luna_EmbedSettings"):
-        luna.Luna_EmbedSettings.argtypes = (
-            wintypes.DWORD,
-            c_uint32,
-            c_uint8,
-            c_bool,
-            c_wchar_p,
-            c_uint32,
-            c_bool,
-            c_bool,
-            c_bool,
-            c_float,
-        )
-    if hasattr(luna, "Luna_UseEmbed"):
-        luna.Luna_UseEmbed.argtypes = (ThreadParam, c_bool)
-    if hasattr(luna, "Luna_CheckIsUsingEmbed"):
-        luna.Luna_CheckIsUsingEmbed.argtypes = (ThreadParam,)
-        luna.Luna_CheckIsUsingEmbed.restype = c_bool
-    if hasattr(luna, "Luna_EmbedCallback"):
-        luna.Luna_EmbedCallback.argtypes = (ThreadParam, c_wchar_p, c_wchar_p)
     if hasattr(luna, "Luna_AllocString"):
         luna.Luna_AllocString.argtypes = (c_wchar_p,)
         luna.Luna_AllocString.restype = c_void_p
-
-    def _apply_embed_settings(pid_):
-        if not args.enable_embed:
-            return
-        if not hasattr(luna, "Luna_EmbedSettings"):
-            return
-        try:
-            luna.Luna_EmbedSettings(
-                pid_,
-                int(os.environ.get("LUNA_EMBED_TIMEOUT_MS", "12000")),
-                2,
-                False,
-                "",
-                0,
-                True,
-                False,
-                False,
-                0.0,
-            )
-            _emit_status("Embed translation enabled.")
-        except Exception as e:
-            _emit_status(f"Failed to apply embed settings: {e}")
 
     def _insert_pc_hooks(pid_):
         time.sleep(0.6)
@@ -361,7 +275,6 @@ def main() -> int:
     def on_proc_connect(pid_):
         if args.auto_pc_hooks:
             threading.Thread(target=_insert_pc_hooks, args=(pid_,), daemon=True).start()
-        _apply_embed_settings(pid_)
         _emit_status(f"Process connected: {pid_}")
 
     def on_proc_remove(pid_):
@@ -372,300 +285,27 @@ def main() -> int:
             luna.Luna_SyncThread(tp, True)
         except Exception:
             pass
-        pid_i = int(tp.processId)
-        ctx_pair = (int(tp.ctx), int(tp.ctx2))
-        ctx_pairs_by_pid.setdefault(pid_i, set()).add(ctx_pair)
-        hc_text = ""
-        hn_text = ""
-        try:
-            hc_text = str(hc or "")
-        except Exception:
-            hc_text = ""
-        try:
-            if isinstance(hn, (bytes, bytearray)):
-                hn_text = hn.decode("utf-8", errors="ignore")
-            else:
-                hn_text = str(hn or "")
-        except Exception:
-            hn_text = ""
-        hc_low = hc_text.lower()
-        hn_low = hn_text.lower()
-        force_embed = ("embed" in hc_low) or ("embed" in hn_low)
-        force_embed = force_embed or ("qlie" in hc_low) or ("qlie" in hn_low)
-        force_embed = force_embed or (int(tp.addr) in embed_hook_addrs.get(int(tp.processId), set()))
-        if force_embed:
-            for code_key in {hc_text.strip().lower(), hn_text.strip().lower()}:
-                if code_key:
-                    ctx_pairs_by_pid_code.setdefault((pid_i, code_key), set()).add(ctx_pair)
-            _emit_status(
-                f"Embed candidate hook: pid={int(tp.processId)} addr=0x{int(tp.addr):X} hc={hc_text}"
-            )
-        if args.enable_embed and (isembedable or force_embed) and hasattr(luna, "Luna_UseEmbed"):
-            try:
-                luna.Luna_UseEmbed(tp, True)
-            except Exception:
-                pass
 
     def on_remove_hook(hc, hn, tp):
         return
 
     def on_output(hc, hn, tp, output):
-        nonlocal embed_seq, out_embed_req_count, native_embed_req_count, unsupported_embed_warned
         text = _clean_text(output)
         if not text or _is_noise(text):
             return
-        raw_text = "" if output is None else str(output)
         key = (int(tp.processId), int(tp.addr), int(tp.ctx), int(tp.ctx2))
         with pending_lock:
             pending[key] = (text, time.time())
-        embed_addrs = embed_hook_addrs.get(int(tp.processId), set())
-        hc_low = ""
-        hn_low = ""
-        try:
-            hc_low = str(hc or "").lower()
-        except Exception:
-            hc_low = ""
-        try:
-            if isinstance(hn, (bytes, bytearray)):
-                hn_low = hn.decode("utf-8", errors="ignore").lower()
-            else:
-                hn_low = str(hn or "").lower()
-        except Exception:
-            hn_low = ""
-        is_qlie_output = ("qlie" in hc_low) or ("qlie" in hn_low)
-        _emit_debug(
-            "output_text",
-            pid=int(tp.processId),
-            addr=f"0x{int(tp.addr):X}",
-            ctx=int(tp.ctx),
-            ctx2=int(tp.ctx2),
-            hook_code=("" if hc is None else str(hc)),
-            hook_name=(hn.decode("utf-8", errors="ignore") if isinstance(hn, (bytes, bytearray)) else str(hn or "")),
-            raw_text=raw_text,
-            clean_text=text,
-            is_qlie_output=bool(is_qlie_output),
-        )
-        pid_i = int(tp.processId)
-        primary_addr = embed_primary_addr.get(pid_i)
-        if (
-            args.enable_embed
-            and is_qlie_output
-            and primary_addr
-            and hasattr(luna, "Luna_UseEmbed")
-        ):
-            ctx_candidates = {
-                int(tp.ctx),
-                int(tp.ctx) & 0xFFFF,
-            }
-            ctx2_candidates = {
-                int(tp.ctx2),
-                int(tp.ctx2) & 0xFFFF,
-                0,
-                1,
-            }
-            for alt_ctx in ctx_candidates:
-                for alt_ctx2 in ctx2_candidates:
-                    pkey = (pid_i, int(primary_addr), int(alt_ctx), int(alt_ctx2))
-                    if pkey in embed_primary_enabled_keys:
-                        continue
-                    try:
-                        tp_primary = ThreadParam()
-                        tp_primary.processId = pid_i
-                        tp_primary.addr = int(primary_addr)
-                        tp_primary.ctx = int(alt_ctx)
-                        tp_primary.ctx2 = int(alt_ctx2)
-                        try:
-                            luna.Luna_SyncThread(tp_primary, True)
-                        except Exception:
-                            pass
-                        luna.Luna_UseEmbed(tp_primary, True)
-                        embed_primary_enabled_keys.add(pkey)
-                        using_primary = None
-                        if hasattr(luna, "Luna_CheckIsUsingEmbed"):
-                            try:
-                                using_primary = bool(luna.Luna_CheckIsUsingEmbed(tp_primary))
-                            except Exception:
-                                using_primary = None
-                        if using_primary is None:
-                            _emit_status(
-                                f"Embed enabled on primary thread: {(pid_i, int(primary_addr), int(alt_ctx), int(alt_ctx2))}"
-                            )
-                        else:
-                            _emit_status(
-                                f"Embed enabled on primary thread: {(pid_i, int(primary_addr), int(alt_ctx), int(alt_ctx2))} using={using_primary}"
-                            )
-                    except Exception:
-                        pass
-        if (
-            args.enable_embed
-            and (int(tp.addr) in embed_addrs or is_qlie_output)
-            and hasattr(luna, "Luna_UseEmbed")
-            and key not in embed_enabled_keys
-        ):
-            try:
-                tp_enable = ThreadParam()
-                tp_enable.processId = int(tp.processId)
-                tp_enable.addr = int(tp.addr)
-                tp_enable.ctx = int(tp.ctx)
-                tp_enable.ctx2 = int(tp.ctx2)
-                luna.Luna_UseEmbed(tp_enable, True)
-                embed_enabled_keys.add(key)
-                using = None
-                if hasattr(luna, "Luna_CheckIsUsingEmbed"):
-                    try:
-                        using = bool(luna.Luna_CheckIsUsingEmbed(tp_enable))
-                    except Exception:
-                        using = None
-                if using is None:
-                    _emit_status(f"Embed enabled on output thread: {key}")
-                else:
-                    _emit_status(f"Embed enabled on output thread: {key} using={using}")
-            except Exception:
-                pass
-        if args.enable_embed and (int(tp.addr) in embed_addrs or is_qlie_output):
-            try:
-                tp_copy = ThreadParam()
-                tp_copy.processId = int(tp.processId)
-                tp_copy.addr = int(tp.addr)
-                tp_copy.ctx = int(tp.ctx)
-                tp_copy.ctx2 = int(tp.ctx2)
-                embed_seq += 1
-                request_id = "out-{}-{}-{}-{}-{}".format(
-                    int(tp_copy.processId),
-                    int(tp_copy.addr),
-                    int(tp_copy.ctx),
-                    int(tp_copy.ctx2),
-                    embed_seq,
-                )
-                with embed_pending_lock:
-                    embed_pending[request_id] = (tp_copy, raw_text)
-                _emit_embed_request(request_id, text)
-                _emit_debug(
-                    "embed_request_fallback",
-                    request_id=request_id,
-                    pid=int(tp_copy.processId),
-                    addr=f"0x{int(tp_copy.addr):X}",
-                    ctx=int(tp_copy.ctx),
-                    ctx2=int(tp_copy.ctx2),
-                    source_text=raw_text,
-                    cleaned_text=text,
-                )
-                out_embed_req_count += 1
-                if (
-                    (not unsupported_embed_warned)
-                    and out_embed_req_count >= 3
-                    and native_embed_req_count == 0
-                ):
-                    unsupported_embed_warned = True
-                    _emit_status(
-                        "No native EmbedCallback requests detected (only out-* fallback). "
-                        "This title likely does not support in-place replacement via Luna embed on current hook path."
-                    )
-            except Exception:
-                pass
 
     def on_host_info(code, msg):
         if msg:
-            m = str(msg)
-            _emit_debug("host_info", code=int(code), message=m)
-            try:
-                low = m.lower()
-                if "embedqlie" in low:
-                    hit = re.search(r"([0-9a-fA-F]{6,16})", m)
-                    if hit:
-                        addr_i = int(hit.group(1), 16)
-                        pid_i = int(pid)
-                        embed_primary_addr[pid_i] = addr_i
-                        embed_hook_addrs.setdefault(pid_i, set()).add(addr_i)
-                        _emit_status(f"Embed primary addr bound from host info: pid={pid_i} addr=0x{addr_i:X}")
-            except Exception:
-                pass
-            _emit_status(m)
+            _emit_status(str(msg))
 
     def on_hook_insert(pid_, addr, hcode):
-        try:
-            hcode_text = str(hcode or "")
-            hcode_low = hcode_text.lower()
-            _emit_debug(
-                "hook_insert",
-                pid=int(pid_),
-                addr=f"0x{int(addr):X}",
-                hook_code=hcode_text,
-            )
-            if ("embed" in hcode_low) or ("qlie" in hcode_low):
-                pid_i = int(pid_)
-                addr_i = int(addr)
-                addrs = embed_hook_addrs.setdefault(pid_i, set())
-                addrs.add(addr_i)
-                if ("embedqlie" in hcode_low) or (pid_i not in embed_primary_addr):
-                    embed_primary_addr[pid_i] = addr_i
-                _emit_status(
-                    f"Embed/QLIE hook detected: pid={pid_i} addr=0x{addr_i:X} code={hcode_text}"
-                )
-                if args.enable_embed and hasattr(luna, "Luna_UseEmbed"):
-                    code_key = hcode_text.strip().lower()
-                    ctx_pairs = set(ctx_pairs_by_pid_code.get((pid_i, code_key), set()))
-                    if not ctx_pairs:
-                        ctx_pairs = set(ctx_pairs_by_pid.get(pid_i, set()))
-                    used = 0
-                    for ctx, ctx2 in list(ctx_pairs)[:256]:
-                        try:
-                            tp_bind = ThreadParam()
-                            tp_bind.processId = pid_i
-                            tp_bind.addr = addr_i
-                            tp_bind.ctx = int(ctx)
-                            tp_bind.ctx2 = int(ctx2)
-                            luna.Luna_UseEmbed(tp_bind, True)
-                            used += 1
-                        except Exception:
-                            pass
-                    if used:
-                        _emit_status(
-                            f"Embed bound contexts: pid={pid_i} addr=0x{addr_i:X} count={used}"
-                        )
-        except Exception:
-            pass
         return
 
     def on_embed(text, tp):
-        nonlocal embed_seq, native_embed_req_count
-        if not args.enable_embed:
-            return
-        raw_text = "" if text is None else str(text)
-        cleaned = _clean_text(text)
-        if not cleaned:
-            return
-        try:
-            tp_copy = ThreadParam()
-            tp_copy.processId = int(tp.processId)
-            tp_copy.addr = int(tp.addr)
-            tp_copy.ctx = int(tp.ctx)
-            tp_copy.ctx2 = int(tp.ctx2)
-            embed_seq += 1
-            request_id = "{}-{}-{}-{}-{}".format(
-                int(tp_copy.processId),
-                int(tp_copy.addr),
-                int(tp_copy.ctx),
-                int(tp_copy.ctx2),
-                embed_seq,
-            )
-            with embed_pending_lock:
-                embed_pending[request_id] = (tp_copy, raw_text)
-            native_embed_req_count += 1
-            _emit_status(f"Embed request: {request_id}")
-            _emit_debug(
-                "embed_request_native",
-                request_id=request_id,
-                pid=int(tp_copy.processId),
-                addr=f"0x{int(tp_copy.addr):X}",
-                ctx=int(tp_copy.ctx),
-                ctx2=int(tp_copy.ctx2),
-                source_text=raw_text,
-                cleaned_text=cleaned,
-            )
-            _emit_embed_request(request_id, cleaned)
-        except Exception:
-            return
+        return
 
     def on_i18n_query(querytext):
         try:
@@ -698,7 +338,6 @@ def main() -> int:
     luna.Luna_ResetLang()
 
     luna.Luna_ConnectProcess(pid)
-    _apply_embed_settings(pid)
     if luna.Luna_CheckIfNeedInject(pid):
         ret = subprocess.run([str(proxy), "dllinject", str(pid), str(hook)], check=False).returncode
         if ret == 0:
@@ -720,84 +359,8 @@ def main() -> int:
     threading.Thread(target=flush_loop, daemon=True).start()
     threading.Thread(target=watch_stdin, daemon=True).start()
 
-    def _send_embed_callback_variants(tp0: ThreadParam, src_text: str, trans_text: str) -> None:
-        if not hasattr(luna, "Luna_EmbedCallback"):
-            return
-        src_raw = src_text or ""
-        src_clean = _clean_text(src_raw)
-        trans_send = trans_text or ""
-
-        pid_i = int(tp0.processId)
-        embed_addr = embed_primary_addr.get(pid_i)
-        targets = []
-
-        if embed_addr:
-            tp_embed = ThreadParam()
-            tp_embed.processId = int(tp0.processId)
-            tp_embed.addr = int(embed_addr)
-            tp_embed.ctx = int(tp0.ctx)
-            tp_embed.ctx2 = int(tp0.ctx2)
-            targets.append(tp_embed)
-
-        targets.append(tp0)
-
-        sent = 0
-        seen = set()
-        for target in targets:
-            k = (int(target.processId), int(target.addr), int(target.ctx), int(target.ctx2))
-            if k in seen:
-                continue
-            seen.add(k)
-            try:
-                luna.Luna_EmbedCallback(target, src_raw, trans_send)
-                sent += 1
-            except Exception:
-                pass
-            if src_clean and src_clean != src_raw:
-                try:
-                    luna.Luna_EmbedCallback(target, src_clean, trans_send)
-                    sent += 1
-                except Exception:
-                    pass
-
-        if targets:
-            try:
-                luna.Luna_EmbedCallback(targets[0], "", trans_send)
-                sent += 1
-            except Exception:
-                pass
-
-        _emit_status(f"Embed callback sent (variants={sent}).")
-        _emit_debug(
-            "embed_callback_sent",
-            pid=int(tp0.processId),
-            addr=f"0x{int(tp0.addr):X}",
-            ctx=int(tp0.ctx),
-            ctx2=int(tp0.ctx2),
-            source_text=src_text,
-            source_clean=_clean_text(src_text),
-            translated_text=trans_text,
-            variants=int(sent),
-            primary_addr=(f"0x{int(embed_addr):X}" if embed_addr else None),
-        )
-
     try:
         while not stop_event.is_set():
-            try:
-                while True:
-                    request_id, trans = embed_result_queue.get_nowait()
-                    with embed_pending_lock:
-                        pending_embed = embed_pending.pop(request_id, None)
-                    if not pending_embed:
-                        continue
-                    tp0, src_text = pending_embed
-                    if hasattr(luna, "Luna_EmbedCallback"):
-                        try:
-                            _send_embed_callback_variants(tp0, src_text, trans)
-                        except Exception:
-                            pass
-            except queue.Empty:
-                pass
             time.sleep(0.05)
     finally:
         try:
