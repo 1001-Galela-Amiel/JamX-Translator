@@ -459,18 +459,16 @@ class MainWindow(QtWidgets.QWidget):
         lang_row.addWidget(self.overlay_toggle)
         right_col.addLayout(lang_row)
 
-        self.table = QtWidgets.QTableWidget(0, 4)
+        self.table = QtWidgets.QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels([
             "Source Text",
-            "Translate",
             "Translation",
             "BBox/Source",
         ])
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
-        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
         self.table.cellClicked.connect(self.on_row_selected)
         self.table.itemSelectionChanged.connect(self.on_select)
         right_col.addWidget(self.table, 1)
@@ -734,14 +732,9 @@ class MainWindow(QtWidgets.QWidget):
             src_text = e.get("text", "")
             self.table.insertRow(row)
             self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(src_text))
-
-            btn = QtWidgets.QPushButton("Translate")
-            btn.clicked.connect(lambda checked=False, r=row: self.manual_translate_row(r))
-            self.table.setCellWidget(row, 1, btn)
-
-            self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(""))
+            self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(""))
             bbox_str = str(e.get("bbox", ""))
-            self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(bbox_str))
+            self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(bbox_str))
 
             key = f"{src_lang}|{dst_lang}|{src_text}"
             if src_text.strip() and key not in self.translation_cache and key not in self.pending_translation_keys:
@@ -1106,9 +1099,8 @@ class MainWindow(QtWidgets.QWidget):
         row = self.table.rowCount()
         self.table.insertRow(row)
         self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(text))
-        self.table.setItem(row, 1, QtWidgets.QTableWidgetItem("hook"))
-        self.table.setItem(row, 2, QtWidgets.QTableWidgetItem("(translating...)"))
-        self.table.setItem(row, 3, QtWidgets.QTableWidgetItem("hook"))
+        self.table.setItem(row, 1, QtWidgets.QTableWidgetItem("(translating...)"))
+        self.table.setItem(row, 2, QtWidgets.QTableWidgetItem("hook"))
         self.ocr_results.append({
             "text": text,
             "bbox": (0, 0, 0, 0),
@@ -1209,7 +1201,7 @@ class MainWindow(QtWidgets.QWidget):
         src_lang = self.src_combo.currentData()
         dst_lang = self.dst_combo.currentData()
 
-        self.table.setItem(row, 2, QtWidgets.QTableWidgetItem("(translating...)"))
+        self.table.setItem(row, 1, QtWidgets.QTableWidgetItem("(translating...)"))
         self.translator.translate_async(src_lang, dst_lang, src_text, tag={"type": "manual", "row": row})
 
     def translate_and_update(self, src: str, dst: str, text: str) -> None:
@@ -1250,27 +1242,27 @@ class MainWindow(QtWidgets.QWidget):
                 self.display_signal.emit(trans)
                 row = tag.get("row")
                 if row is not None and 0 <= row < self.table.rowCount():
-                    self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(trans))
+                    self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(trans))
                     if 0 <= row < len(self.ocr_results):
                         self.ocr_results[row]["translation"] = trans
             elif ttype == "manual":
                 row = tag.get("row")
                 if row is not None and 0 <= row < self.table.rowCount():
-                    self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(trans))
+                    self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(trans))
                     if 0 <= row < len(self.ocr_results):
                         self.ocr_results[row]["translation"] = trans
                 self.display_signal.emit(trans)
             elif ttype == "auto":
                 row = tag.get("row")
                 if row is not None and 0 <= row < self.table.rowCount():
-                    self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(trans))
+                    self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(trans))
                     if 0 <= row < len(self.ocr_results):
                         self.ocr_results[row]["translation"] = trans
                 else:
                     for idx, item in enumerate(self.ocr_results):
                         if str(item.get("text") or "") == text:
                             if idx < self.table.rowCount():
-                                self.table.setItem(idx, 2, QtWidgets.QTableWidgetItem(trans))
+                                self.table.setItem(idx, 1, QtWidgets.QTableWidgetItem(trans))
                             self.ocr_results[idx]["translation"] = trans
                             break
                 self.display_signal.emit(trans)
@@ -1288,7 +1280,7 @@ class MainWindow(QtWidgets.QWidget):
         text = self.edit.toPlainText().strip()
         if r < len(self.ocr_results):
             self.ocr_results[r]["translation"] = text
-        self.table.setItem(r, 2, QtWidgets.QTableWidgetItem(text))
+        self.table.setItem(r, 1, QtWidgets.QTableWidgetItem(text))
         if text:
             self.display_signal.emit(text)
         self.status.setText("Applied translation to selected.")
@@ -1317,7 +1309,7 @@ class MainWindow(QtWidgets.QWidget):
             self.display_window.show()
             self.display_window.raise_()
             for row in range(self.table.rowCount() - 1, -1, -1):
-                item = self.table.item(row, 2)
+                item = self.table.item(row, 1)
                 if item:
                     text = (item.text() or "").strip()
                     if text and text != "(translating...)":
@@ -1348,7 +1340,7 @@ class MainWindow(QtWidgets.QWidget):
     def display_window_update(self, item: QtWidgets.QTableWidgetItem) -> None:
         if item is None:
             return
-        if item.column() != 2:
+        if item.column() != 1:
             return
         text = (item.text() or "").strip()
         if not text or text == "(translating...)":
@@ -1359,7 +1351,7 @@ class MainWindow(QtWidgets.QWidget):
         last_row = self.table.rowCount() - 1
         if last_row >= 0:
             self.table.blockSignals(True)
-            self.table.setItem(last_row, 2, QtWidgets.QTableWidgetItem(text))
+            self.table.setItem(last_row, 1, QtWidgets.QTableWidgetItem(text))
             self.table.blockSignals(False)
 
     def preprocessing_enable(self, _):
