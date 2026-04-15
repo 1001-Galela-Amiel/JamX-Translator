@@ -310,6 +310,9 @@ class MainWindow(QtWidgets.QWidget):
         self.setWindowTitle("Game Translation Tool")
         self.setMinimumSize(800, 500)
 
+        # Reference to display window
+        self.display_window = display_window
+
         screen = QtWidgets.QApplication.primaryScreen()
         if screen:
             avail = screen.availableGeometry()
@@ -1361,9 +1364,8 @@ class MainWindow(QtWidgets.QWidget):
         if self.ocr_worker:
             self.ocr_worker.enable_preprocessing = self.enable_preprocessing_checkbox.isChecked()
     
-    #def open_settings(self):
-    #    self.settings_window = SettingsWindow(self)
-    #    self.settings_window.show()
+    def open_settings(self):
+        self.display_window.open_settings()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self.display_window.close()
@@ -1555,6 +1557,8 @@ class SettingsWindow(QtWidgets.QWidget):
         self.setWindowTitle("Settings")
         self.resize(350, 400)
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint)
+        
+        # Attributes for modifying display window
         self.original_font_family = target.font_family
         self.original_font_size = target.font_size
         self.original_bold = target.bold
@@ -1564,22 +1568,32 @@ class SettingsWindow(QtWidgets.QWidget):
         self.original_bg_alpha = target.bg_alpha
         self.original_alignment = target.alignment
 
-        layout = QtWidgets.QVBoxLayout()
+        # Tab layout initialization
+        self.tabs = QtWidgets.QTabWidget()
 
+        self.display_settings_tab = QtWidgets.QWidget()
+        self.translator_settings_tab = QtWidgets.QWidget()
+        self.misc_settings_tab = QtWidgets.QWidget()
+        
+        main_layout = QtWidgets.QVBoxLayout()
+
+
+        # -------- Display Settings ---------
+        display_layout = QtWidgets.QVBoxLayout(self.display_settings_tab)
         font_label = QtWidgets.QLabel("Font:")
         self.font_combo = QtWidgets.QFontComboBox()
         self.font_combo.setCurrentFont(QtGui.QFont(target.font_family))
         self.font_combo.currentFontChanged.connect(self.font_changed)
-        layout.addWidget(font_label)
-        layout.addWidget(self.font_combo)
+        display_layout.addWidget(font_label)
+        display_layout.addWidget(self.font_combo)
 
         size_label = QtWidgets.QLabel("Font Size:")
         self.size_spinner = QtWidgets.QSpinBox()
         self.size_spinner.setRange(6, 40)
         self.size_spinner.setValue(target.font_size)
         self.size_spinner.valueChanged.connect(self.size_changed)
-        layout.addWidget(size_label)
-        layout.addWidget(self.size_spinner)
+        display_layout.addWidget(size_label)
+        display_layout.addWidget(self.size_spinner)
 
         self.bold_checkbox = QtWidgets.QCheckBox("Bold?")
         self.bold_checkbox.setChecked(target.bold)
@@ -1587,32 +1601,32 @@ class SettingsWindow(QtWidgets.QWidget):
         self.italic_checkbox = QtWidgets.QCheckBox("Italic?")
         self.italic_checkbox.setChecked(target.italic)
         self.italic_checkbox.stateChanged.connect(self.italic_changed)
-        layout.addWidget(self.bold_checkbox)
-        layout.addWidget(self.italic_checkbox)
+        display_layout.addWidget(self.bold_checkbox)
+        display_layout.addWidget(self.italic_checkbox)
 
         self.text_color_button = QtWidgets.QPushButton("Choose text color")
         self.text_color_button.clicked.connect(self.color_changed)
-        layout.addWidget(self.text_color_button)
+        display_layout.addWidget(self.text_color_button)
 
         self.bg_color_button = QtWidgets.QPushButton("Choose background color")
         self.bg_color_button.clicked.connect(self.background_changed)
-        layout.addWidget(self.bg_color_button)
+        display_layout.addWidget(self.bg_color_button)
 
         opacity_label = QtWidgets.QLabel("Opacity:")
         self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(1, 100)
         self.opacity_slider.setValue(int(target.bg_alpha/255*100))
         self.opacity_slider.valueChanged.connect(self.opacity_changed)
-        layout.addWidget(opacity_label)
-        layout.addWidget(self.opacity_slider)
+        display_layout.addWidget(opacity_label)
+        display_layout.addWidget(self.opacity_slider)
 
         align_label = QtWidgets.QLabel("Alignment:")
         self.align_combo = QtWidgets.QComboBox()
         self.align_combo.addItems(["Left", "Center", "Right", "Top", "Bottom"])
         self.align_combo.setCurrentText("Left")
         self.align_combo.currentTextChanged.connect(self.alignment_changed)
-        layout.addWidget(align_label)
-        layout.addWidget(self.align_combo)
+        display_layout.addWidget(align_label)
+        display_layout.addWidget(self.align_combo)
 
         button_layout = QtWidgets.QHBoxLayout()
         save_button = QtWidgets.QPushButton("Save")
@@ -1624,12 +1638,27 @@ class SettingsWindow(QtWidgets.QWidget):
         button_layout.addWidget(save_button)
         button_layout.addWidget(default_button)
         button_layout.addWidget(cancel_button)
-        layout.addLayout(button_layout)
+        display_layout.addLayout(button_layout)
+        display_layout.addStretch()
 
-        layout.addStretch()
-        self.setLayout(layout)
+        # -------- Translator Settings --------
+        translator_layout = QtWidgets.QVBoxLayout(self.translator_settings_tab)
+        save_button2 = QtWidgets.QPushButton("Save")
+        translator_layout.addWidget(save_button2)
 
-    # ---------------- Settings Functions ----------------
+        # -------- Misc Settings --------
+        misc_layout = QtWidgets.QVBoxLayout(self.misc_settings_tab)
+        save_button3 = QtWidgets.QPushButton("Save2")
+        misc_layout.addWidget(save_button3)
+
+        # ------- Layout finalization ---------
+        self.tabs.addTab(self.display_settings_tab, "Display")
+        self.tabs.addTab(self.translator_settings_tab, "Translator")
+        self.tabs.addTab(self.misc_settings_tab, "Misc.")
+        main_layout.addWidget(self.tabs)
+        self.setLayout(main_layout)
+
+    # ---------------- Display Settings Functions ----------------
     def font_changed(self, font: QtGui.QFont):
         self.target.font_family = font.family()
         self.target.update()
