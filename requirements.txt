@@ -10,3 +10,4 @@ numpy<2
 onnxruntime==1.17.3
 pynput
 requests>=2.32.3
+deepl

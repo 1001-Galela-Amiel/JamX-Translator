@@ -53,6 +53,14 @@ HOOK_CODEPAGE_MAP = {
     "en": 1252,
 }
 
+MISC_DEFAULTS = {
+    "snip_shortcut": "f1"
+}
+TRANSLATION_DEFAULTS = {
+    "src_lang": "auto",
+    "dst_lang": "en",
+    "translator": "Google Translate"
+}
 
 class CaptureWorker(QtCore.QThread):
     """Background thread that captures frames continuously."""
@@ -153,10 +161,21 @@ class ShortcutWorker(QtCore.QObject):
     """Background thread for detecting keyboard presses for shortcut key purposes"""
     pressed = QtCore.Signal()
 
+    def __init__(self, key_sequence: str = "F1"):
+        super().__init__()
+        self.key_sequence = key_sequence
+    
     def run(self):
         def on_press(key):
-            if key == keyboard.Key.f1:
-                self.pressed.emit()
+            try:
+                # Handle special keys like F1, F2 etc.
+                if hasattr(key, 'name') and key.name.lower() == self.key_sequence.lower():
+                    self.pressed.emit()
+                # Handle regular character keys
+                elif hasattr(key, 'char') and key.char == self.key_sequence.lower():
+                    self.pressed.emit()
+            except AttributeError:
+                pass
 
         with keyboard.Listener(on_press=on_press) as listener:
             listener.join()
@@ -328,6 +347,31 @@ class MainWindow(QtWidgets.QWidget):
         self.setWindowTitle("Game Translation Tool")
         self.setMinimumSize(800, 500)
 
+        # Reference to display window
+        self.display_window = display_window
+        self.display_window.main_window = self
+
+        # Loading Misc Settings
+        try:
+            if os.path.exists("misc_settings.json"):
+                with open("misc_settings.json", "r") as f:
+                    self.misc_settings = json.load(f)
+            else:
+                self.misc_settings = MISC_DEFAULTS.copy()
+        except KeyError:
+            self.misc_settings = MISC_DEFAULTS.copy()
+
+        # Loading translation settings
+        try:
+            if os.path.exists("translator_settings.json"):
+                with open("translator_settings.json", "r") as f:
+                    self.translation_settings = json.load(f)
+            else:
+                self.translation_settings = TRANSLATION_DEFAULTS.copy()
+        except KeyError:
+            self.translation_settings = TRANSLATION_DEFAULTS.copy()
+
+        self.translator_engine = self.translation_settings["translator"]
         screen = QtWidgets.QApplication.primaryScreen()
         if screen:
             avail = screen.availableGeometry()
@@ -340,7 +384,7 @@ class MainWindow(QtWidgets.QWidget):
             )
         else:
             self.resize(1200, 700)
-
+        
         self.display_window = display_window
         self.translate_signal.connect(self.translate_and_update)
 
@@ -470,12 +514,14 @@ class MainWindow(QtWidgets.QWidget):
             self.src_combo.addItem(label, userData=code)
         for code, label in LANG_MAP.items():
             self.dst_combo.addItem(label, userData=code)
-        src_index = self.src_combo.findData("auto")
+        # Small alteration to set default languages to last ones saved
+        src_index = self.src_combo.findData(self.translation_settings["src_lang"])
         if src_index >= 0:
             self.src_combo.setCurrentIndex(src_index)
-        dst_index = self.dst_combo.findData("en")
+        dst_index = self.dst_combo.findData(self.translation_settings["dst_lang"])
         if dst_index >= 0:
             self.dst_combo.setCurrentIndex(dst_index)
+
         lang_row.addWidget(QtWidgets.QLabel("From"))
         lang_row.addWidget(self.src_combo)
         lang_row.addWidget(QtWidgets.QLabel("To"))
@@ -483,7 +529,7 @@ class MainWindow(QtWidgets.QWidget):
         self.text_color_btn = QtWidgets.QPushButton("Text Color")
         lang_row.addWidget(self.text_color_btn)
         self.overlay_toggle = QtWidgets.QCheckBox("Show translation overlay")
-        self.overlay_toggle.setChecked(False)
+        self.overlay_toggle.setChecked(True)
         lang_row.addWidget(self.overlay_toggle)
         right_col.addLayout(lang_row)
 
@@ -507,9 +553,11 @@ class MainWindow(QtWidgets.QWidget):
 
         btn_row = QtWidgets.QHBoxLayout()
         self.apply_btn = QtWidgets.QPushButton("Apply")
+        self.settings_button = QtWidgets.QPushButton("Settings")
         self.save_btn = QtWidgets.QPushButton("Save")
         self.help_btn = QtWidgets.QPushButton("Help")
         btn_row.addWidget(self.apply_btn)
+        btn_row.addWidget(self.settings_button)
         btn_row.addWidget(self.save_btn)
         btn_row.addWidget(self.help_btn)
         right_col.addLayout(btn_row)
@@ -522,6 +570,7 @@ class MainWindow(QtWidgets.QWidget):
         self.capture_backend_combo.currentIndexChanged.connect(self.on_capture_backend_mode_changed)
         self.apply_btn.clicked.connect(self.apply_translation)
         self.save_btn.clicked.connect(self.save_translations)
+        self.settings_button.clicked.connect(self.open_settings)
         self.help_btn.clicked.connect(self.show_help)
         self.text_color_btn.clicked.connect(self.choose_text_overlay_color)
         self.overlay_toggle.toggled.connect(self.on_overlay_toggled)
@@ -531,7 +580,7 @@ class MainWindow(QtWidgets.QWidget):
         self.inject_log_signal.connect(self._append_inject_log)
 
         self.shortcut_thread = QtCore.QThread()
-        self.shortcut_worker = ShortcutWorker()
+        self.shortcut_worker = ShortcutWorker(self.misc_settings["snip_shortcut"])
         self.shortcut_worker.moveToThread(self.shortcut_thread)
         self.shortcut_worker.pressed.connect(self.start_snip)
         self.shortcut_thread.started.connect(self.shortcut_worker.run)
@@ -794,7 +843,8 @@ class MainWindow(QtWidgets.QWidget):
                     src_lang,
                     dst_lang,
                     src_text,
-                    tag={"type": "auto", "row": row}
+                    tag={"type": "auto", "row": row},
+                    translator=self.translator_engine
                 )
 
             self.ocr_results.append({
@@ -1166,6 +1216,7 @@ class MainWindow(QtWidgets.QWidget):
             dst_lang,
             text,
             tag={"type": "hook", "row": row, "ts": timestamp},
+            translator=self.translator_engine
         )
 
     def on_hook_status(self, message: str) -> None:
@@ -1199,7 +1250,7 @@ class MainWindow(QtWidgets.QWidget):
             self._resolve_embed_requests_for_key(key, cached)
             return
         try:
-            trans = translate_text(src_lang, dst_lang, text)
+            trans = translate_text(src_lang, dst_lang, text, self.translator_engine)
         except Exception:
             trans = text
         self.translation_cache[key] = trans
@@ -1255,7 +1306,7 @@ class MainWindow(QtWidgets.QWidget):
         dst_lang = self.dst_combo.currentData()
 
         self.table.setItem(row, 1, QtWidgets.QTableWidgetItem("(translating...)"))
-        self.translator.translate_async(src_lang, dst_lang, src_text, tag={"type": "manual", "row": row})
+        self.translator.translate_async(src_lang, dst_lang, src_text, tag={"type": "manual", "row": row}, translaator=self.translator_engine)
 
     def translate_and_update(self, src: str, dst: str, text: str) -> None:
         if not text:
@@ -1264,7 +1315,7 @@ class MainWindow(QtWidgets.QWidget):
         if key in self.translation_cache or key in self.pending_translation_keys:
             return
         self.pending_translation_keys.add(key)
-        self.translator.translate_async(src, dst, text, tag={"type": "auto"})
+        self.translator.translate_async(src, dst, text, tag={"type": "auto"}, translator=self.translator_engine)
 
     def on_translation_ready(self, src: str, dst: str, text: str, trans: str, tag: Any) -> None:
         key = f"{src}|{dst}|{text}"
@@ -1411,6 +1462,15 @@ class MainWindow(QtWidgets.QWidget):
         if self.ocr_worker:
             self.ocr_worker.enable_preprocessing = self.enable_preprocessing_checkbox.isChecked()
     
+    def open_settings(self):
+        self.display_window.open_settings()
+
+    def apply_snip_shortcut(self, key_name: str):
+        self.shortcut_worker.key_sequence = key_name.lower()
+        self.misc_settings["snip_shortcut"] = key_name
+        with open("misc_settings.json", "w") as f:
+            json.dump(self.misc_settings, f, indent=4)
+
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self.display_window.close()
         self.stop_capture()
@@ -1456,8 +1516,8 @@ class DisplayWindow(QtWidgets.QWidget):
             "Right-click to alter settings or close this window"
         )
 
-        if os.path.exists("text_overlay_display_settings.json"):
-            with open("text_overlay_display_settings.json", "r") as f:
+        if os.path.exists("display_settings.json"):
+            with open("display_settings.json", "r") as f:
                 data = json.load(f)
             try:
                 self.font_family = data["font"]
@@ -1601,6 +1661,18 @@ class SettingsWindow(QtWidgets.QWidget):
         self.setWindowTitle("Settings")
         self.resize(350, 400)
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint)
+
+        # Tab layout initialization
+        self.tabs = QtWidgets.QTabWidget()
+
+        self.display_settings_tab = QtWidgets.QWidget()
+        self.translator_settings_tab = QtWidgets.QWidget()
+        self.misc_settings_tab = QtWidgets.QWidget()
+        
+        main_layout = QtWidgets.QVBoxLayout()
+
+        # -------- Display Settings ---------
+        # Attributes for modifying display window
         self.original_font_family = target.font_family
         self.original_font_size = target.font_size
         self.original_bold = target.bold
@@ -1610,22 +1682,21 @@ class SettingsWindow(QtWidgets.QWidget):
         self.original_bg_alpha = target.bg_alpha
         self.original_alignment = target.alignment
 
-        layout = QtWidgets.QVBoxLayout()
-
+        display_layout = QtWidgets.QVBoxLayout(self.display_settings_tab)
         font_label = QtWidgets.QLabel("Font:")
         self.font_combo = QtWidgets.QFontComboBox()
         self.font_combo.setCurrentFont(QtGui.QFont(target.font_family))
         self.font_combo.currentFontChanged.connect(self.font_changed)
-        layout.addWidget(font_label)
-        layout.addWidget(self.font_combo)
+        display_layout.addWidget(font_label)
+        display_layout.addWidget(self.font_combo)
 
         size_label = QtWidgets.QLabel("Font Size:")
         self.size_spinner = QtWidgets.QSpinBox()
         self.size_spinner.setRange(6, 40)
         self.size_spinner.setValue(target.font_size)
         self.size_spinner.valueChanged.connect(self.size_changed)
-        layout.addWidget(size_label)
-        layout.addWidget(self.size_spinner)
+        display_layout.addWidget(size_label)
+        display_layout.addWidget(self.size_spinner)
 
         self.bold_checkbox = QtWidgets.QCheckBox("Bold?")
         self.bold_checkbox.setChecked(target.bold)
@@ -1633,32 +1704,32 @@ class SettingsWindow(QtWidgets.QWidget):
         self.italic_checkbox = QtWidgets.QCheckBox("Italic?")
         self.italic_checkbox.setChecked(target.italic)
         self.italic_checkbox.stateChanged.connect(self.italic_changed)
-        layout.addWidget(self.bold_checkbox)
-        layout.addWidget(self.italic_checkbox)
+        display_layout.addWidget(self.bold_checkbox)
+        display_layout.addWidget(self.italic_checkbox)
 
         self.text_color_button = QtWidgets.QPushButton("Choose text color")
         self.text_color_button.clicked.connect(self.color_changed)
-        layout.addWidget(self.text_color_button)
+        display_layout.addWidget(self.text_color_button)
 
         self.bg_color_button = QtWidgets.QPushButton("Choose background color")
         self.bg_color_button.clicked.connect(self.background_changed)
-        layout.addWidget(self.bg_color_button)
+        display_layout.addWidget(self.bg_color_button)
 
         opacity_label = QtWidgets.QLabel("Opacity:")
         self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(1, 100)
         self.opacity_slider.setValue(int(target.bg_alpha/255*100))
         self.opacity_slider.valueChanged.connect(self.opacity_changed)
-        layout.addWidget(opacity_label)
-        layout.addWidget(self.opacity_slider)
+        display_layout.addWidget(opacity_label)
+        display_layout.addWidget(self.opacity_slider)
 
         align_label = QtWidgets.QLabel("Alignment:")
         self.align_combo = QtWidgets.QComboBox()
         self.align_combo.addItems(["Left", "Center", "Right", "Top", "Bottom"])
         self.align_combo.setCurrentText("Left")
         self.align_combo.currentTextChanged.connect(self.alignment_changed)
-        layout.addWidget(align_label)
-        layout.addWidget(self.align_combo)
+        display_layout.addWidget(align_label)
+        display_layout.addWidget(self.align_combo)
 
         button_layout = QtWidgets.QHBoxLayout()
         save_button = QtWidgets.QPushButton("Save")
@@ -1670,12 +1741,95 @@ class SettingsWindow(QtWidgets.QWidget):
         button_layout.addWidget(save_button)
         button_layout.addWidget(default_button)
         button_layout.addWidget(cancel_button)
-        layout.addLayout(button_layout)
+        display_layout.addLayout(button_layout)
+        display_layout.addStretch()
 
-        layout.addStretch()
-        self.setLayout(layout)
+        # -------- Translator Settings --------
+        
+        translator_layout = QtWidgets.QVBoxLayout(self.translator_settings_tab)
+        # Copy of source translator language
+        self.src_combo = QtWidgets.QComboBox()
+        temp_src_combo = self.target.main_window.src_combo
+        for i in range(temp_src_combo.count()):
+            self.src_combo.addItem(temp_src_combo.itemText(i), userData=temp_src_combo.itemData(i))
+        self.src_combo.setCurrentIndex(temp_src_combo.currentIndex())
+        # Keeping src/dst combo box same between settings and main window
+        self.src_combo.currentIndexChanged.connect(
+            self.target.main_window.src_combo.setCurrentIndex
+        )
+        
+        self.target.main_window.src_combo.currentIndexChanged.connect(
+            self.src_combo.setCurrentIndex
+        )
 
-    # ---------------- Settings Functions ----------------
+        # Copy of destination translator language
+        self.dst_combo = QtWidgets.QComboBox()
+        temp_dst_combo = self.target.main_window.dst_combo
+        for i in range(temp_dst_combo.count()):
+            self.dst_combo.addItem(temp_dst_combo.itemText(i), userData=temp_dst_combo.itemData(i))
+        self.dst_combo.setCurrentIndex(temp_dst_combo.currentIndex())
+        self.dst_combo.currentIndexChanged.connect(
+            self.target.main_window.dst_combo.setCurrentIndex
+        )
+        self.target.main_window.dst_combo.currentIndexChanged.connect(
+            self.dst_combo.setCurrentIndex
+        )
+
+        # Translator engine combo box
+        self.translator_combo = QtWidgets.QComboBox()
+        self.translator_combo.addItems(["Google Translate", "DeepL"])
+        self.translator_combo.setCurrentText(self.target.main_window.translator_engine)
+        self.translator_combo.currentTextChanged.connect(self.translator_changed)
+
+        self.default_translation_button = QtWidgets.QPushButton("Reset to default")
+        self.default_translation_button.clicked.connect(self.default_translation_settings)
+        self.translation_settings_button = QtWidgets.QPushButton("Save")
+        self.translation_settings_button.clicked.connect(self.save_translation_settings)
+        translator_layout.addWidget(QtWidgets.QLabel("Source Language:"))
+        translator_layout.addWidget(self.src_combo)
+        translator_layout.addWidget(QtWidgets.QLabel("Destination Language:"))
+        translator_layout.addWidget(self.dst_combo)
+        translator_layout.addWidget(QtWidgets.QLabel("Translator Engine:"))
+        translator_layout.addWidget(self.translator_combo)
+        translator_layout.addStretch(1)
+        
+        translator_button_layout = QtWidgets.QHBoxLayout()
+        translator_button_layout.addWidget(self.translation_settings_button)
+        translator_button_layout.addWidget(self.default_translation_button)
+        translator_layout.addLayout(translator_button_layout)
+
+        # -------- Misc Settings --------
+        if os.path.exists("misc_settings.json"):
+            with open("misc_settings.json", "r") as f:
+               misc_settings = json.load(f)
+        else:
+            misc_settings = MISC_DEFAULTS.copy()
+        
+        self.shortcut_edit = QtWidgets.QKeySequenceEdit(
+            QtGui.QKeySequence(misc_settings["snip_shortcut"])
+        )
+        self.shortcut_edit.setMaximumSequenceLength(1)
+        misc_layout = QtWidgets.QVBoxLayout(self.misc_settings_tab)
+        misc_layout.addWidget(QtWidgets.QLabel("Snip Shortcut:"))
+        misc_layout.addWidget(self.shortcut_edit)
+        misc_layout.addStretch(1)
+        misc_button_layout = QtWidgets.QHBoxLayout()
+        misc_apply_button = QtWidgets.QPushButton("Save")
+        misc_apply_button.clicked.connect(self.save_misc_settings)
+        misc_button_layout.addWidget(misc_apply_button)
+        misc_default_button = QtWidgets.QPushButton("Reset to default")
+        misc_default_button.clicked.connect(self.default_misc_settings)
+        misc_button_layout.addWidget(misc_default_button)
+        misc_layout.addLayout(misc_button_layout)
+
+        # ------- Layout finalization ---------
+        self.tabs.addTab(self.display_settings_tab, "Display")
+        self.tabs.addTab(self.translator_settings_tab, "Translator")
+        self.tabs.addTab(self.misc_settings_tab, "Misc.")
+        main_layout.addWidget(self.tabs)
+        self.setLayout(main_layout)
+
+    # ---------------- Display Settings Functions ----------------
     def font_changed(self, font: QtGui.QFont):
         self.target.font_family = font.family()
         self.target.update()
@@ -1750,9 +1904,8 @@ class SettingsWindow(QtWidgets.QWidget):
             "italic": self.original_italic,
             "alignment": alignment_map.get(self.original_alignment, "Left"),
         }
-        with open("text_overlay_display_settings.json", "w") as f:
+        with open("display_settings.json", "w") as f:
             json.dump(data, f, indent=2)
-        self.close()
 
     def on_cancel(self):
         self.target.font_family = self.original_font_family
@@ -1783,6 +1936,41 @@ class SettingsWindow(QtWidgets.QWidget):
         self.align_combo.setCurrentText("Left")
         self.target.update()
 
+    # Translator settings functions
+    def translator_changed(self, text: str):
+        self.target.main_window.translator_engine = text
+
+    def save_translation_settings(self):
+        data = {
+            "src_lang": self.src_combo.currentData(),
+            "dst_lang": self.dst_combo.currentData(),
+            "translator": self.translator_combo.currentText()
+        }
+        with open("translator_settings.json", "w") as f:
+            json.dump(data, f, indent=2)
+    
+    def default_translation_settings(self):
+        src_index = self.src_combo.findData(TRANSLATION_DEFAULTS["src_lang"])
+        if src_index >= 0:
+            self.src_combo.setCurrentIndex(src_index)
+        dst_index = self.dst_combo.findData(TRANSLATION_DEFAULTS["dst_lang"])
+        if dst_index >= 0:
+            self.dst_combo.setCurrentIndex(dst_index)
+        translator_index = self.translator_combo.findData(TRANSLATION_DEFAULTS["translator"])
+        if translator_index >= 0:
+            self.translator_combo.setCurrentIndex(translator_index)
+        
+
+    # Misc settings functions
+    def save_misc_settings(self):
+        key_name = self.shortcut_edit.keySequence().toString()
+        self.target.main_window.apply_snip_shortcut(key_name)
+    
+    def default_misc_settings(self):
+        self.shortcut_edit.setKeySequence(QtGui.QKeySequence(MISC_DEFAULTS["snip_shortcut"]))
+        self.save_misc_settings()
+    
+    
     def closeEvent(self, event) -> None:
         event.accept()
 

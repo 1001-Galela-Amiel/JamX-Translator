@@ -3,5 +3,8 @@
   "background_color": "#000000",
   "opacity": 178,
   "font": "Arial",
-  "font_size": 16
+  "font_size": 16,
+  "bold": false,
+  "italic": false,
+  "alignment": "Left"
 }

@@ -2,8 +2,8 @@
   "h_min": 0,
   "s_min": 0,
   "v_min": 0,
-  "h_max": 145,
-  "s_max": 211,
-  "v_max": 223,
+  "h_max": 179,
+  "s_max": 255,
+  "v_max": 255,
   "binarization": 0
 }
