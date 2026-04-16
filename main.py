@@ -142,10 +142,21 @@ class ShortcutWorker(QtCore.QObject):
     """Background thread for detecting keyboard presses for shortcut key purposes"""
     pressed = QtCore.Signal()
 
+    def __init__(self, key_sequence: str = "F1"):
+        super().__init__()
+        self.key_sequence = key_sequence
+    
     def run(self):
         def on_press(key):
-            if key == keyboard.Key.f1:
-                self.pressed.emit()
+            try:
+                # Handle special keys like F1, F2 etc.
+                if hasattr(key, 'name') and key.name.lower() == self.key_sequence.lower():
+                    self.pressed.emit()
+                # Handle regular character keys
+                elif hasattr(key, 'char') and key.char == self.key_sequence.lower():
+                    self.pressed.emit()
+            except AttributeError:
+                pass
 
         with keyboard.Listener(on_press=on_press) as listener:
             listener.join()
@@ -325,7 +336,7 @@ class MainWindow(QtWidgets.QWidget):
             )
         else:
             self.resize(1200, 700)
-
+        
         self.display_window = display_window
         self.translate_signal.connect(self.translate_and_update)
 
@@ -507,7 +518,7 @@ class MainWindow(QtWidgets.QWidget):
         self.table.itemChanged.connect(self.display_window_update)
 
         self.shortcut_thread = QtCore.QThread()
-        self.shortcut_worker = ShortcutWorker()
+        self.shortcut_worker = ShortcutWorker('F1')
         self.shortcut_worker.moveToThread(self.shortcut_thread)
         self.shortcut_worker.pressed.connect(self.start_snip)
         self.shortcut_thread.started.connect(self.shortcut_worker.run)
@@ -1412,8 +1423,8 @@ class DisplayWindow(QtWidgets.QWidget):
             "Right-click to alter settings or close this window"
         )
 
-        if os.path.exists("text_overlay_display_settings.json"):
-            with open("text_overlay_display_settings.json", "r") as f:
+        if os.path.exists("display_settings.json"):
+            with open("display_settings.json", "r") as f:
                 data = json.load(f)
             try:
                 self.font_family = data["font"]
@@ -1733,7 +1744,7 @@ class SettingsWindow(QtWidgets.QWidget):
             "italic": self.original_italic,
             "alignment": alignment_map.get(self.original_alignment, "Left"),
         }
-        with open("text_overlay_display_settings.json", "w") as f:
+        with open("display_settings.json", "w") as f:
             json.dump(data, f, indent=2)
         self.close()
 
