@@ -1586,16 +1586,6 @@ class SettingsWindow(QtWidgets.QWidget):
         self.resize(350, 400)
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint)
 
-        # Attributes for modifying display window
-        self.original_font_family = target.font_family
-        self.original_font_size = target.font_size
-        self.original_bold = target.bold
-        self.original_italic = target.italic
-        self.original_text_color = QtGui.QColor(target.text_color)
-        self.original_bg_color = QtGui.QColor(target.bg_color)
-        self.original_bg_alpha = target.bg_alpha
-        self.original_alignment = target.alignment
-
         # Tab layout initialization
         self.tabs = QtWidgets.QTabWidget()
 
@@ -1606,6 +1596,16 @@ class SettingsWindow(QtWidgets.QWidget):
         main_layout = QtWidgets.QVBoxLayout()
 
         # -------- Display Settings ---------
+        # Attributes for modifying display window
+        self.original_font_family = target.font_family
+        self.original_font_size = target.font_size
+        self.original_bold = target.bold
+        self.original_italic = target.italic
+        self.original_text_color = QtGui.QColor(target.text_color)
+        self.original_bg_color = QtGui.QColor(target.bg_color)
+        self.original_bg_alpha = target.bg_alpha
+        self.original_alignment = target.alignment
+
         display_layout = QtWidgets.QVBoxLayout(self.display_settings_tab)
         font_label = QtWidgets.QLabel("Font:")
         self.font_combo = QtWidgets.QFontComboBox()
@@ -1669,9 +1669,32 @@ class SettingsWindow(QtWidgets.QWidget):
         display_layout.addStretch()
 
         # -------- Translator Settings --------
+        
         translator_layout = QtWidgets.QVBoxLayout(self.translator_settings_tab)
-        save_button2 = QtWidgets.QPushButton("Save")
-        translator_layout.addWidget(save_button2)
+        # Copy of source translator language
+        self.src_combo = QtWidgets.QComboBox()
+        temp_src_combo = self.target.main_window.src_combo
+        for i in range(temp_src_combo.count()):
+            self.src_combo.addItem(temp_src_combo.itemText(i))
+        self.src_combo.setCurrentIndex(temp_src_combo.currentIndex())
+        self.src_combo.currentIndexChanged.connect(
+            self.target.main_window.src_combo.setCurrentIndex
+        )
+
+        # Copy of destination translator language
+        self.dst_combo = QtWidgets.QComboBox()
+        temp_dst_combo = self.target.main_window.dst_combo
+        for i in range(temp_dst_combo.count()):
+            self.dst_combo.addItem(temp_dst_combo.itemText(i))
+        self.dst_combo.setCurrentIndex(temp_dst_combo.currentIndex())
+        self.dst_combo.currentIndexChanged.connect(
+            self.target.main_window.dst_combo.setCurrentIndex
+        )
+        translator_layout.addWidget(QtWidgets.QLabel("Source Language:"))
+        translator_layout.addWidget(self.src_combo)
+        translator_layout.addWidget(QtWidgets.QLabel("Destination Language:"))
+        translator_layout.addWidget(self.dst_combo)
+        translator_layout.addStretch(1)
 
         # -------- Misc Settings --------
         if os.path.exists("misc_settings.json"):
