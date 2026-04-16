@@ -1,5 +1,6 @@
 from __future__ import annotations
 import sys
+import time
 from typing import Optional, List, Tuple
 import numpy as np
 from PIL import Image
@@ -29,6 +30,7 @@ if WINDOWS:
 
     _dxcam_cam = None
     _dxcam_region = None
+    _adaptive_backend_cache: dict[int, tuple[str, float]] = {}
 
     def _ensure_dxcam(region: Tuple[int, int, int, int], target_fps: int = 60):
         global _dxcam_cam, _dxcam_region
@@ -49,7 +51,10 @@ if WINDOWS:
         left, top, right, bottom = _client_rect_on_screen(hwnd)
         if right <= left or bottom <= top:
             return None
-        _ensure_dxcam((left, top, right, bottom))
+        try:
+            _ensure_dxcam((left, top, right, bottom))
+        except Exception:
+            return None
         try:
             return _dxcam_cam.get_latest_frame()
         except Exception:
@@ -85,13 +90,10 @@ if WINDOWS:
             bmp.CreateCompatibleBitmap(src_dc, w, h)
 
             old_obj = mem_dc.SelectObject(bmp)
-
-
             mem_dc.SelectObject(bmp)
-
             mem_dc.BitBlt((0, 0), (w, h), src_dc, (0, 0), win32con.SRCCOPY)
             raw = bmp.GetBitmapBits(True)
-            img = np.frombuffer(raw, dtype=np.uint8).reshape((h, w, 4)) 
+            img = np.frombuffer(raw, dtype=np.uint8).reshape((h, w, 4))
             return img.copy()
         finally:
             if mem_dc is not None and old_obj is not None:
@@ -118,6 +120,88 @@ if WINDOWS:
                 win32gui.ReleaseDC(hwnd, hdc_src)
             except Exception:
                 pass
+
+    def _normalize_dxgi_frame(frame: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if frame is None:
+            return None
+        try:
+            arr = np.asarray(frame)
+            if arr.size == 0 or arr.ndim < 2:
+                return None
+            if arr.ndim == 3 and arr.shape[2] == 4:
+                return arr.astype(np.uint8, copy=False)
+            if arr.ndim == 3 and arr.shape[2] == 3:
+                b = arr[:, :, 0]
+                g = arr[:, :, 1]
+                r = arr[:, :, 2]
+                a = np.full_like(b, 255)
+                return np.dstack([b, g, r, a]).astype(np.uint8)
+            return None
+        except Exception:
+            return None
+
+    def _screen_capture(hwnd: int) -> Optional[np.ndarray]:
+        try:
+            left, top, right, bottom = _client_rect_on_screen(hwnd)
+            if right <= left or bottom <= top:
+                return None
+            img = ImageGrab.grab(bbox=(left, top, right, bottom)).convert("RGBA")
+            arr = np.asarray(img, dtype=np.uint8)
+            if arr.ndim != 3 or arr.shape[2] != 4:
+                return None
+            r = arr[:, :, 0]
+            g = arr[:, :, 1]
+            b = arr[:, :, 2]
+            a = arr[:, :, 3]
+            return np.dstack([b, g, r, a]).astype(np.uint8, copy=False)
+        except Exception:
+            return None
+
+    def _frame_quality_score(frame: Optional[np.ndarray]) -> float:
+        if frame is None:
+            return 0.0
+        try:
+            arr = np.asarray(frame)
+            if arr.ndim != 3 or arr.shape[2] < 3:
+                return 0.0
+            if arr.size == 0:
+                return 0.0
+            bgr = arr[:, :, :3].astype(np.float32)
+            mean_v = float(bgr.mean())
+            std_v = float(bgr.std())
+            if mean_v < 1.0 and std_v < 1.0:
+                return 0.0
+            return std_v + min(mean_v, 32.0) * 0.1
+        except Exception:
+            return 0.0
+
+    def _probe_best_backend(hwnd: int, sample_count: int = 4) -> str:
+        scores = {"dxgi": 0.0, "gdi": 0.0}
+        for _ in range(max(1, int(sample_count))):
+            frame_dxgi = _normalize_dxgi_frame(_dxgi_capture(hwnd))
+            scores["dxgi"] += _frame_quality_score(frame_dxgi)
+
+            frame_gdi = _gdi_capture(hwnd)
+            scores["gdi"] += _frame_quality_score(frame_gdi)
+            time.sleep(0.01)
+        return max(scores.items(), key=lambda x: x[1])[0]
+
+    def select_capture_backend(hwnd: int, mode: str = "adaptive") -> str:
+        mode_n = (mode or "adaptive").strip().lower()
+        if mode_n in ("gdi", "dxgi", "screen", "auto"):
+            return mode_n
+        if mode_n not in ("adaptive", "smart", "best"):
+            mode_n = "adaptive"
+        now = time.time()
+        cached = _adaptive_backend_cache.get(int(hwnd))
+        if cached and (now - cached[1]) < 5.0:
+            return cached[0]
+        chosen = _probe_best_backend(hwnd)
+        _adaptive_backend_cache[int(hwnd)] = (chosen, now)
+        return chosen
+else:
+    def select_capture_backend(hwnd: int, mode: str = "adaptive") -> str:
+        return "auto"
 
 # ------------------ Window Lister ------------------
 class WindowLister:
@@ -150,29 +234,32 @@ class WindowLister:
         return []
 
 # ------------------ Capture functions ------------------
-def capture_window_bgra(hwnd: int) -> Optional[np.ndarray]:
+def capture_window_bgra(hwnd: int, backend: str = "auto") -> Optional[np.ndarray]:
     """Return BGRA frame as numpy array."""
     if WINDOWS:
+        mode = (backend or "auto").strip().lower()
+        if mode in ("adaptive", "smart", "best"):
+            mode = select_capture_backend(hwnd, mode)
+        if mode == "dxgi":
+            return _normalize_dxgi_frame(_dxgi_capture(hwnd))
+        if mode == "screen":
+            return _screen_capture(hwnd)
+        if mode == "gdi":
+            return _gdi_capture(hwnd)
+
+        if mode not in ("auto",):
+            mode = "auto"
+
         frame = _gdi_capture(hwnd)
         if frame is not None:
             return frame
 
-        frame = _dxgi_capture(hwnd)
+        frame = _normalize_dxgi_frame(_dxgi_capture(hwnd))
         if frame is not None:
-            try:
-                arr = np.asarray(frame)
-                if arr.size == 0 or arr.ndim < 2:
-                    return None
-                if arr.ndim == 3 and arr.shape[2] == 4:
-                    return arr.astype(np.uint8, copy=False)
-                if arr.ndim == 3 and arr.shape[2] == 3:
-                    b = arr[:, :, 0]
-                    g = arr[:, :, 1]
-                    r = arr[:, :, 2]
-                    a = np.full_like(b, 255)
-                    return np.dstack([b, g, r, a]).astype(np.uint8)
-            except Exception:
-                return None
+            return frame
+        frame = _screen_capture(hwnd)
+        if frame is not None:
+            return frame
         return None
 
     if MAC:
@@ -192,9 +279,9 @@ def capture_window_bgra(hwnd: int) -> Optional[np.ndarray]:
 
     return None
 
-def capture_window_image(hwnd: int) -> Optional[Image.Image]:
+def capture_window_image(hwnd: int, backend: str = "auto") -> Optional[Image.Image]:
     """Return a PIL Image (RGB)."""
-    frame = capture_window_bgra(hwnd)
+    frame = capture_window_bgra(hwnd, backend=backend)
     if frame is None:
         return None
     b, g, r = frame[:, :, 0], frame[:, :, 1], frame[:, :, 2]

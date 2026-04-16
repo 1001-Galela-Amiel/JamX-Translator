@@ -205,6 +205,7 @@ class LunaHookWorker(QtCore.QThread):
         self._helper_mode = False
         self._target_bit: Optional[str] = None
         self._safe_mode = os.environ.get("LUNA_SAFE_MODE") == "1"
+        self._try_elevated_inject = os.environ.get("LUNA_TRY_ELEVATE") == "1"
         env_auto_pc_hooks = os.environ.get("LUNA_AUTO_PC_HOOKS")
         if env_auto_pc_hooks is not None:
             self._auto_pc_hooks = env_auto_pc_hooks == "1"
@@ -258,7 +259,7 @@ class LunaHookWorker(QtCore.QThread):
         self._running = False
         self._stop_helper()
         try:
-            self.wait(1500)
+            self.wait(3000)
         except Exception:
             pass
 
@@ -552,8 +553,26 @@ class LunaHookWorker(QtCore.QThread):
         self._luna.Luna_ConnectProcess(pid)
         self._apply_embed_settings(pid)
         self.status.emit("Luna: Luna_CheckIfNeedInject...")
-        if self._luna.Luna_CheckIfNeedInject(pid):
+        need_inject = bool(self._luna.Luna_CheckIfNeedInject(pid))
+        if need_inject:
             self._inject(pid, target_bit)
+
+        # Robust reconnect path:
+        # - If target was already injected from a previous tool run, callbacks/hooks may not be fully re-bound.
+        # - If we injected just now, reconnect ensures the host observes active hooks consistently.
+        try:
+            self.status.emit("Luna: reconnecting process for hook activation...")
+            self._luna.Luna_ConnectProcess(pid)
+            self._apply_embed_settings(pid)
+        except Exception:
+            pass
+
+        if self._auto_pc_hooks and (not self._safe_mode):
+            try:
+                self._luna.Luna_InsertPCHooks(pid, 0)
+                self._luna.Luna_InsertPCHooks(pid, 1)
+            except Exception:
+                pass
 
     def _apply_embed_settings(self, pid: int) -> None:
         if not self._enable_embed:
@@ -599,6 +618,9 @@ class LunaHookWorker(QtCore.QThread):
                 return
             if os.environ.get("LUNA_NO_ELEVATE") == "1":
                 self.status.emit("DLL injection failed, skipping elevation (LUNA_NO_ELEVATE=1).")
+                return
+            if not self._try_elevated_inject:
+                self.status.emit("DLL injection failed. Skipping elevated injection by default (set LUNA_TRY_ELEVATE=1 to enable).")
                 return
             self.status.emit("DLL injection failed, trying elevated injection...")
             ctypes.windll.shell32.ShellExecuteW(None, "runas", proxy, f'dllinject {pid} "{hook}"', None, 0)

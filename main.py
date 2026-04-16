@@ -21,7 +21,7 @@ from image_preprocessor import removeBackground
 
 from PySide6 import QtWidgets, QtCore, QtGui
 
-from capture import WindowLister, capture_window_bgra, capture_window_image
+from capture import WindowLister, capture_window_bgra, capture_window_image, select_capture_backend
 from ocr_backend import ocr_image_data
 from translate_backend import LANG_MAP, translate_text
 from translation_worker import Translator
@@ -58,23 +58,32 @@ class CaptureWorker(QtCore.QThread):
     """Background thread that captures frames continuously."""
 
     frame_ready = QtCore.Signal(object)
+    backend_selected = QtCore.Signal(str)
 
     def __init__(
         self,
         hwnd: int,
         interval_ms: int = 120,
+        backend_mode: str = "adaptive",
         parent: Optional[QtCore.QObject] = None,
     ) -> None:
         super().__init__(parent)
         self.hwnd = hwnd
         self.interval = max(5, int(interval_ms)) / 1000.0
+        self.backend_mode = str(backend_mode or "adaptive")
+        self._active_backend = self.backend_mode
         self._running = False
 
     def run(self) -> None:
         self._running = True
+        try:
+            self._active_backend = select_capture_backend(self.hwnd, self.backend_mode)
+        except Exception:
+            self._active_backend = self.backend_mode
+        self.backend_selected.emit(self._active_backend)
         while self._running:
             start = time.time()
-            bgra = capture_window_bgra(self.hwnd)
+            bgra = capture_window_bgra(self.hwnd, backend=self._active_backend)
             if bgra is not None:
                 self.frame_ready.emit(bgra)
             dt = time.time() - start
@@ -97,12 +106,14 @@ class OCRWorker(QtCore.QThread):
         hwnd: int,
         ocr_every_ms: int = 1200,
         prefer_lang: str = "auto",
+        capture_backend: str = "auto",
         parent: Optional[QtCore.QObject] = None,
     ) -> None:
         super().__init__(parent)
         self.hwnd = hwnd
         self.ocr_interval = max(100, int(ocr_every_ms)) / 1000.0
         self.prefer_lang = prefer_lang
+        self.capture_backend = str(capture_backend or "auto")
         self._running = False
         self._last_error_message: str = ""
         self._last_error_ts: float = 0.0
@@ -113,7 +124,7 @@ class OCRWorker(QtCore.QThread):
         while self._running:
             start = time.time()
             try:
-                pil_img = capture_window_image(self.hwnd)
+                pil_img = capture_window_image(self.hwnd, backend=self.capture_backend)
                 if pil_img is not None:
                     data = ocr_image_data(pil_img, self.prefer_lang, self.enable_preprocessing)
                     if isinstance(data, tuple):
@@ -224,68 +235,74 @@ class PreviewWidget(QtWidgets.QWidget):
 
         tgt_rect = self.rect()
 
-        painter.fillRect(tgt_rect, QtGui.QColor(32, 34, 37))
-
         if self.qimage is not None and not self.qimage.isNull():
             src_w, src_h = self.qimage.width(), self.qimage.height()
-            scale = min(tgt_rect.width() / src_w, tgt_rect.height() / src_h)
-            draw_w, draw_h = int(src_w * scale), int(src_h * scale)
-            offset_x, offset_y = (tgt_rect.width() - draw_w) // 2, (tgt_rect.height() - draw_h) // 2
-            draw_rect = QtCore.QRect(offset_x, offset_y, draw_w, draw_h)
-            painter.drawImage(draw_rect, self.qimage, self.qimage.rect())
+            if src_w > 0 and src_h > 0:
+                scale = min(tgt_rect.width() / src_w, tgt_rect.height() / src_h)
+                draw_w = int(src_w * scale)
+                draw_h = int(src_h * scale)
+                offset_x = (tgt_rect.width() - draw_w) // 2
+                offset_y = (tgt_rect.height() - draw_h) // 2
+                self._draw_rect = QtCore.QRect(offset_x, offset_y, draw_w, draw_h)
+            else:
+                self._draw_rect = tgt_rect
+            painter.drawImage(self._draw_rect, self.qimage, self.qimage.rect())
         else:
-            draw_rect = tgt_rect
+            self._draw_rect = tgt_rect
+            painter.fillRect(self.rect(), QtGui.QColor(32, 34, 37))
+
+        if self.qimage is None or self.qimage.isNull():
+            painter.end()
+            return
+
+        draw_rect = getattr(self, "_draw_rect", tgt_rect)
+        src_w, src_h = self.qimage.width(), self.qimage.height()
+        scale_x = draw_rect.width() / max(1, src_w)
+        scale_y = draw_rect.height() / max(1, src_h)
+        off_x = draw_rect.left()
+        off_y = draw_rect.top()
+
+        if self.selected_bbox:
+            x, y, w, h = self.selected_bbox
+            tx = int(x * scale_x) + off_x
+            ty = int(y * scale_y) + off_y
+            tw = int(w * scale_x)
+            th = int(h * scale_y)
+            painter.setPen(QtGui.QPen(QtGui.QColor(0, 255, 0), 2))
+            painter.drawRect(tx, ty, tw, th)
 
         if not self.overlay_entries:
             painter.end()
             return
 
-        lines = []
-        y_threshold = 15
-        for e in sorted(self.overlay_entries, key=lambda x: x.get('bbox', (0,0,0,0))[1]):
-            text = e.get('translation') or e.get('text')
-            if not text:
+        painter.setPen(self.text_overlay_color)
+        font = painter.font()
+        font.setPointSize(max(font.pointSize(), 10))
+        painter.setFont(font)
+        metrics = QtGui.QFontMetrics(font)
+
+        max_w = int(draw_rect.width() * 0.6)
+
+        for e in self.overlay_entries:
+            bbox = e.get("bbox")
+            text = e.get("translation") or e.get("text") or ""
+            if not bbox or not text:
                 continue
-            x, y, w, h = e.get('bbox', (0,0,0,0))
-            placed = False
-            for line in lines:
-                if abs(y - line['y']) <= y_threshold:
-                    line['text'] += " " + text
-                    line['y'] = min(line['y'], y)
-                    line['h'] = max(line['h'], y + h - line['y'])
-                    placed = True
-                    break
-            if not placed:
-                lines.append({'text': text, 'y': y, 'h': h})
-
-        if self.qimage is not None and not self.qimage.isNull():
-            painter.setFont(QtGui.QFont("Helvetica", 14))
-            metrics = QtGui.QFontMetrics(painter.font())
-            line_height = metrics.lineSpacing()
-
-            bottom_y = max([line['y'] + line['h'] for line in lines])
-            vertical_padding = 100  
-
-            overlay_x = draw_rect.left() + 10
-            overlay_y = draw_rect.top() + int(bottom_y * scale) + vertical_padding
-
-            overlay_width = int(draw_rect.width() * 0.8)
-            overlay_height = line_height * len(lines) + 8
-
-            if overlay_y + overlay_height > draw_rect.bottom():
-                overlay_y = draw_rect.bottom() - overlay_height - 5
-
+            x, y, w, h = bbox
+            tx = int(x * scale_x) + off_x
+            ty = int(y * scale_y) + off_y
+            rect = metrics.boundingRect(0, 0, max_w, 1000, QtCore.Qt.AlignLeft | QtCore.Qt.TextWordWrap, text)
+            box_w = rect.width() + 12
+            box_h = rect.height() + 12
             painter.setPen(QtCore.Qt.NoPen)
-            painter.setBrush(QtGui.QColor(0, 0, 0, 180))
-            painter.drawRect(overlay_x - 4, overlay_y - 4, overlay_width + 8, overlay_height + 8)
-
+            painter.setBrush(QtGui.QColor(0, 0, 0, 160))
+            painter.drawRect(QtCore.QRect(tx, ty, box_w, box_h))
             painter.setPen(self.text_overlay_color)
-            for i, line in enumerate(lines):
-                painter.drawText(
-                    QtCore.QRect(overlay_x, overlay_y + i * line_height, overlay_width, line_height),
-                    QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
-                    line['text']
-                )
+            painter.drawText(
+                QtCore.QRect(tx + 6, ty + 6, rect.width(), rect.height()),
+                QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop | QtCore.Qt.TextWordWrap,
+                text,
+            )
 
         painter.end()
 
@@ -305,6 +322,7 @@ class MainWindow(QtWidgets.QWidget):
 
     translate_signal = QtCore.Signal(str, str, str)
     display_signal = QtCore.Signal(str)
+    inject_log_signal = QtCore.Signal(str)
     def __init__(self, display_window: 'DisplayWindow') -> None:
         super().__init__()
         self.setWindowTitle("Game Translation Tool")
@@ -390,6 +408,12 @@ class MainWindow(QtWidgets.QWidget):
         self.ocr_spin = QtWidgets.QSpinBox()
         self.ocr_spin.setRange(100, 5000)
         self.ocr_spin.setValue(300)
+        self.capture_backend_combo = QtWidgets.QComboBox()
+        self.capture_backend_combo.addItem("Adaptive", userData="adaptive")
+        self.capture_backend_combo.addItem("DXGI", userData="dxgi")
+        self.capture_backend_combo.addItem("GDI", userData="gdi")
+        self.capture_backend_combo.addItem("Screen", userData="screen")
+        self.capture_backend_combo.addItem("Legacy Auto", userData="auto")
 
         self.manual_ocr_button = QtWidgets.QPushButton("Manual OCR")
         self.manual_ocr_button.clicked.connect(self.start_snip)
@@ -403,6 +427,9 @@ class MainWindow(QtWidgets.QWidget):
         ctrl.addSpacing(20)
         ctrl.addWidget(QtWidgets.QLabel("OCR (ms)"))
         ctrl.addWidget(self.ocr_spin)
+        ctrl.addSpacing(20)
+        ctrl.addWidget(QtWidgets.QLabel("Capture"))
+        ctrl.addWidget(self.capture_backend_combo)
         ctrl.addStretch(1)
         ctrl.addWidget(self.enable_preprocessing_checkbox)
         ctrl.addWidget(self.preprocessing_settings_button)
@@ -424,6 +451,7 @@ class MainWindow(QtWidgets.QWidget):
 
         self.inject_log = QtWidgets.QPlainTextEdit()
         self.inject_log.setReadOnly(True)
+        self.inject_log.setMaximumBlockCount(400)
         self.inject_log.setPlaceholderText(
             "Injection log. When attached, hooked text and translations will appear here."
         )
@@ -491,6 +519,7 @@ class MainWindow(QtWidgets.QWidget):
         self.detach_btn.clicked.connect(self.detach_window)
         self.interval_spin.valueChanged.connect(self.on_interval_changed)
         self.ocr_spin.valueChanged.connect(self.on_interval_changed)
+        self.capture_backend_combo.currentIndexChanged.connect(self.on_capture_backend_mode_changed)
         self.apply_btn.clicked.connect(self.apply_translation)
         self.save_btn.clicked.connect(self.save_translations)
         self.help_btn.clicked.connect(self.show_help)
@@ -499,6 +528,7 @@ class MainWindow(QtWidgets.QWidget):
         self.src_combo.currentIndexChanged.connect(self.on_src_lang_changed)
 
         self.table.itemChanged.connect(self.display_window_update)
+        self.inject_log_signal.connect(self._append_inject_log)
 
         self.shortcut_thread = QtCore.QThread()
         self.shortcut_worker = ShortcutWorker()
@@ -553,9 +583,10 @@ class MainWindow(QtWidgets.QWidget):
             self.stop_hook()
             self.status.setText(f"Attached OCR to window: {current_title}")
         else:
-            self.start_hook()
+            started = self.start_hook()
             self.stop_capture()
-            self.status.setText(f"Attached hook to window: {current_title}")
+            if started:
+                self.status.setText(f"Attached hook to window: {current_title}")
 
     def detach_window(self) -> None:
         self.stop_capture()
@@ -587,14 +618,17 @@ class MainWindow(QtWidgets.QWidget):
         self.worker = CaptureWorker(
             self.attached_hwnd,
             interval_ms=self.interval_spin.value(),
+            backend_mode=str(self.capture_backend_combo.currentData() or "adaptive"),
         )
         self.worker.frame_ready.connect(self.on_frame_ready)
+        self.worker.backend_selected.connect(self.on_capture_backend_selected)
         self.worker.start()
 
         self.ocr_worker = OCRWorker(
             self.attached_hwnd,
             ocr_every_ms=self.ocr_spin.value(),
             prefer_lang=self.src_combo.currentData(),
+            capture_backend=str(self.capture_backend_combo.currentData() or "adaptive"),
         )
         self.ocr_worker.ocr_ready.connect(self.on_ocr_ready)
         self.ocr_worker.enable_preprocessing = self.enable_preprocessing_checkbox.isChecked()
@@ -624,6 +658,18 @@ class MainWindow(QtWidgets.QWidget):
                 self.translate_signal.emit(src_lang, dst_lang, txt)
         self.preview.update_frame(frame_bgra)
         self._refresh_preview_overlay()
+
+    def on_capture_backend_selected(self, backend_name: str) -> None:
+        backend = str(backend_name or "").strip()
+        if not backend:
+            return
+        self.status.setText(f"Capture backend: {backend}")
+
+    def on_capture_backend_mode_changed(self) -> None:
+        if self.tabs.currentIndex() != 0:
+            return
+        if self.worker and self.attached_hwnd:
+            self.start_capture()
 
     def _refresh_preview_overlay(self) -> None:
         try:
@@ -732,12 +778,17 @@ class MainWindow(QtWidgets.QWidget):
             src_text = e.get("text", "")
             self.table.insertRow(row)
             self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(src_text))
-            self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(""))
             bbox_str = str(e.get("bbox", ""))
             self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(bbox_str))
 
             key = f"{src_lang}|{dst_lang}|{src_text}"
-            if src_text.strip() and key not in self.translation_cache and key not in self.pending_translation_keys:
+            cached = self.translation_cache.get(key)
+            if cached is not None:
+                self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(cached))
+            else:
+                self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(""))
+
+            if src_text.strip() and cached is None and key not in self.pending_translation_keys:
                 self.pending_translation_keys.add(key)
                 self.translator.translate_async(
                     src_lang,
@@ -750,7 +801,7 @@ class MainWindow(QtWidgets.QWidget):
                 "text": src_text,
                 "bbox": e.get("bbox"),
                 "lang": e.get("lang", "unknown"),
-                "translation": "",
+                "translation": cached or "",
             })
         self._refresh_preview_overlay()
     
@@ -1010,9 +1061,9 @@ class MainWindow(QtWidgets.QWidget):
         self._recent_logged_pairs[pair_key] = now
         return True
 
-    def start_hook(self) -> None:
+    def start_hook(self) -> bool:
         if not self.attached_hwnd:
-            return
+            return False
         self.stop_hook()
         if LunaHookWorker is None:
             self.status.setText("Luna hook backend unavailable.")
@@ -1020,7 +1071,7 @@ class MainWindow(QtWidgets.QWidget):
                 "Luna hook backend unavailable. Ensure LunaTranslator_x64_win10 exists "
                 "or set LUNA_TRANSLATOR_DIR."
             )
-            return
+            return False
         src_lang = (self.src_combo.currentData() or "auto").lower()
         codepage = HOOK_CODEPAGE_MAP.get(src_lang, 932)
         embed_enabled = bool(self.embed_toggle.isChecked())
@@ -1050,7 +1101,7 @@ class MainWindow(QtWidgets.QWidget):
                 try:
                     self.memory_patch_worker = ProcessMemoryPatchWorker(
                         pid,
-                        status_cb=self._append_inject_log,
+                        status_cb=self.inject_log_signal.emit,
                         source_codepage=codepage,
                         debug_cb=self._on_memory_patch_debug,
                     )
@@ -1063,6 +1114,8 @@ class MainWindow(QtWidgets.QWidget):
         elif effective_embed_enabled and not ProcessMemoryPatchWorker:
             self._append_inject_log("Memory patch worker unavailable: import failed.")
             self._write_debug_event("memory_patch.skipped", reason="worker_unavailable")
+
+        return True
 
     def _on_memory_patch_debug(self, payload: Dict[str, Any]) -> None:
         if not isinstance(payload, dict):
@@ -1971,17 +2024,11 @@ class ImageWindow(QtWidgets.QWidget):
             pass
 
 def main() -> None:
-    if hasattr(QtCore.Qt, "AA_EnableHighDpiScaling"):
-        QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
-    if hasattr(QtCore.Qt, "AA_UseHighDpiPixmaps"):
-        QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
-
     app = QtWidgets.QApplication(sys.argv)
     win2 = DisplayWindow()
     win = MainWindow(win2)
     win.display_signal.connect(win2.changed_text)
     win.show()
-    win2.show()
     sys.exit(app.exec())
 
 if __name__ == "__main__":

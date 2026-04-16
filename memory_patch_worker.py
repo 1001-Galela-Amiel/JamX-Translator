@@ -442,17 +442,11 @@ class ProcessMemoryPatchWorker:
         if write_count > 0:
             self._cycles_without_hits = 0
             self._last_stats_ts = now
-            self._emit(
-                f"Memory patch hit: writes={write_count}, regions={hit_regions}, "
-                f"pairs={pair_count}, scanned={scanned // 1024}KB"
-            )
             return
         self._cycles_without_hits += 1
         if (now - self._last_stats_ts) >= 8.0 and self._cycles_without_hits >= 6:
             self._last_stats_ts = now
-            self._emit(
-                f"Memory patch searching: pairs={pair_count}, scanned={scanned // 1024}KB, no hits yet"
-            )
+            return
 
     def _loop(self) -> None:
         while self._running:
