@@ -53,8 +53,13 @@ HOOK_CODEPAGE_MAP = {
     "en": 1252,
 }
 
-MISC_DEFAULTS ={
+MISC_DEFAULTS = {
     "snip_shortcut": "f1"
+}
+TRANSLATION_DEFAULTS = {
+    "src_lang": "auto",
+    "dst_lang": "en",
+    "translator": "google"
 }
 
 class CaptureWorker(QtCore.QThread):
@@ -335,6 +340,13 @@ class MainWindow(QtWidgets.QWidget):
         else:
             self.misc_settings = MISC_DEFAULTS.copy()
         
+        if os.path.exists("translation_settings.json"):
+            with open("translation_settings.json", "r") as f:
+                self.translation_settings = json.load(f)
+        else:
+            self.translation_settings = TRANSLATION_DEFAULTS.copy()
+        
+        self.translator_engine = self.translation_settings["translator"]
         screen = QtWidgets.QApplication.primaryScreen()
         if screen:
             avail = screen.availableGeometry()
@@ -1174,7 +1186,7 @@ class MainWindow(QtWidgets.QWidget):
             self._resolve_embed_requests_for_key(key, cached)
             return
         try:
-            trans = translate_text(src_lang, dst_lang, text)
+            trans = translate_text(src_lang, dst_lang, text, self.translator_engine)
         except Exception:
             trans = text
         self.translation_cache[key] = trans
@@ -1690,10 +1702,19 @@ class SettingsWindow(QtWidgets.QWidget):
         self.dst_combo.currentIndexChanged.connect(
             self.target.main_window.dst_combo.setCurrentIndex
         )
+
+        # Translator engine combo box
+        self.translator_combo = QtWidgets.QComboBox()
+        self.translator_combo.addItems(["Google Translate", "DeepL"])
+        self.translator_combo.setCurrentText("Google Translate")
+        self.translator_combo.currentTextChanged.connect(self.translator_changed)
+
         translator_layout.addWidget(QtWidgets.QLabel("Source Language:"))
         translator_layout.addWidget(self.src_combo)
         translator_layout.addWidget(QtWidgets.QLabel("Destination Language:"))
         translator_layout.addWidget(self.dst_combo)
+        translator_layout.addWidget(QtWidgets.QLabel("Translator Engine:"))
+        translator_layout.addWidget(self.translator_combo)
         translator_layout.addStretch(1)
 
         # -------- Misc Settings --------
@@ -1833,6 +1854,11 @@ class SettingsWindow(QtWidgets.QWidget):
         self.align_combo.setCurrentText("Left")
         self.target.update()
 
+    # Translator settings functions
+    def translator_changed(self, text: str):
+        print("We changed the translator to: " + text)
+        self.target.main_window.translator_engine = text
+    
     # Misc settings functions
     def apply_misc_settings(self):
         key_name = self.shortcut_edit.keySequence().toString()

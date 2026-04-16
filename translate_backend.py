@@ -1,6 +1,7 @@
 import requests
 import html
 import urllib.parse
+import deepl
 
 GOOGLE_TRANSLATE_URL = "https://translate.google.com/m"
 _translation_cache = {}
@@ -101,16 +102,36 @@ def google_translate(text, src="auto", dst="en"):
     except:
         return text
 
+# Uses deepl library to send some text of x language to deepL and translate to y language
+def deepl_translate(text, source_lang="auto", target_lang="en"):
+    # Requires api key via sign-up - currently using my own (Brent)
+    print("switched to deepl")
+    api_key = "BTM1s6VGuuy6NJi"
+    translator = deepl.Translator(api_key)
+    result = translator.translate_text(
+        text,
+        source_lang=source_lang.upper(),
+        target_lang=target_lang.upper()
+    )
+    return result.text
 
-def translate_text(src_lang, dst_lang, text):
+def translate_text(src_lang, dst_lang, text, translator="Google Translate"):
     """
     Provides a cached translation helper between two language codes.
     It looks up the text in an in memory cache and only calls google_translate when there is no cached result, storing the new translation afterward.
     """
+    print("current translator is: " + translator)
     key = f"{src_lang}|{dst_lang}|{text}"
     if key in _translation_cache:
         return _translation_cache[key]
-
-    result = google_translate(text, src_lang, dst_lang)
+    if translator == "Google Translate":
+        print("using google translate")
+        result = google_translate(text, src_lang, dst_lang)
+    elif translator == "DeepL":
+        print("using deepl")
+        result = deepl_translate(text, src_lang, dst_lang)
+    else:
+        print("there was an error")
+        raise ValueError(f"Unknown translator: {translator}")
     _translation_cache[key] = result
     return result
