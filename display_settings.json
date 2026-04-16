@@ -4,7 +4,7 @@
   "opacity": 178,
   "font": "Arial",
   "font_size": 16,
-  "bold": true,
-  "italic": true,
+  "bold": false,
+  "italic": false,
   "alignment": "Left"
 }

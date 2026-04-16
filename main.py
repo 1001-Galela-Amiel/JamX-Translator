@@ -59,7 +59,7 @@ MISC_DEFAULTS = {
 TRANSLATION_DEFAULTS = {
     "src_lang": "auto",
     "dst_lang": "en",
-    "translator": "google"
+    "translator": "Google Translate"
 }
 
 class CaptureWorker(QtCore.QThread):
@@ -333,19 +333,26 @@ class MainWindow(QtWidgets.QWidget):
         self.display_window = display_window
         self.display_window.main_window = self
 
-        # Loading some settings
-        if os.path.exists("misc_settings.json"):
-            with open("misc_settings.json", "r") as f:
-                self.misc_settings = json.load(f)
-        else:
+        # Loading Misc Settings
+        try:
+            if os.path.exists("misc_settings.json"):
+                with open("misc_settings.json", "r") as f:
+                    self.misc_settings = json.load(f)
+            else:
+                self.misc_settings = MISC_DEFAULTS.copy()
+        except KeyError:
             self.misc_settings = MISC_DEFAULTS.copy()
-        
-        if os.path.exists("translation_settings.json"):
-            with open("translation_settings.json", "r") as f:
-                self.translation_settings = json.load(f)
-        else:
+
+        # Loading translation settings
+        try:
+            if os.path.exists("translator_settings.json"):
+                with open("translator_settings.json", "r") as f:
+                    self.translation_settings = json.load(f)
+            else:
+                self.translation_settings = TRANSLATION_DEFAULTS.copy()
+        except KeyError:
             self.translation_settings = TRANSLATION_DEFAULTS.copy()
-        
+
         self.translator_engine = self.translation_settings["translator"]
         screen = QtWidgets.QApplication.primaryScreen()
         if screen:
@@ -479,12 +486,14 @@ class MainWindow(QtWidgets.QWidget):
             self.src_combo.addItem(label, userData=code)
         for code, label in LANG_MAP.items():
             self.dst_combo.addItem(label, userData=code)
-        src_index = self.src_combo.findData("auto")
+        # Small alteration to set default languages to last ones saved
+        src_index = self.src_combo.findData(self.translation_settings["src_lang"])
         if src_index >= 0:
             self.src_combo.setCurrentIndex(src_index)
-        dst_index = self.dst_combo.findData("en")
+        dst_index = self.dst_combo.findData(self.translation_settings["dst_lang"])
         if dst_index >= 0:
             self.dst_combo.setCurrentIndex(dst_index)
+
         lang_row.addWidget(QtWidgets.QLabel("From"))
         lang_row.addWidget(self.src_combo)
         lang_row.addWidget(QtWidgets.QLabel("To"))
@@ -492,7 +501,7 @@ class MainWindow(QtWidgets.QWidget):
         self.text_color_btn = QtWidgets.QPushButton("Text Color")
         lang_row.addWidget(self.text_color_btn)
         self.overlay_toggle = QtWidgets.QCheckBox("Show translation overlay")
-        self.overlay_toggle.setChecked(False)
+        self.overlay_toggle.setChecked(True)
         lang_row.addWidget(self.overlay_toggle)
         right_col.addLayout(lang_row)
 
@@ -783,7 +792,8 @@ class MainWindow(QtWidgets.QWidget):
                     src_lang,
                     dst_lang,
                     src_text,
-                    tag={"type": "auto", "row": row}
+                    tag={"type": "auto", "row": row},
+                    translator=self.translator_engine
                 )
 
             self.ocr_results.append({
@@ -1153,6 +1163,7 @@ class MainWindow(QtWidgets.QWidget):
             dst_lang,
             text,
             tag={"type": "hook", "row": row, "ts": timestamp},
+            translator=self.translator_engine
         )
 
     def on_hook_status(self, message: str) -> None:
@@ -1242,7 +1253,7 @@ class MainWindow(QtWidgets.QWidget):
         dst_lang = self.dst_combo.currentData()
 
         self.table.setItem(row, 1, QtWidgets.QTableWidgetItem("(translating...)"))
-        self.translator.translate_async(src_lang, dst_lang, src_text, tag={"type": "manual", "row": row})
+        self.translator.translate_async(src_lang, dst_lang, src_text, tag={"type": "manual", "row": row}, translaator=self.translator_engine)
 
     def translate_and_update(self, src: str, dst: str, text: str) -> None:
         if not text:
@@ -1251,7 +1262,7 @@ class MainWindow(QtWidgets.QWidget):
         if key in self.translation_cache or key in self.pending_translation_keys:
             return
         self.pending_translation_keys.add(key)
-        self.translator.translate_async(src, dst, text, tag={"type": "auto"})
+        self.translator.translate_async(src, dst, text, tag={"type": "auto"}, translator=self.translator_engine)
 
     def on_translation_ready(self, src: str, dst: str, text: str, trans: str, tag: Any) -> None:
         key = f"{src}|{dst}|{text}"
@@ -1687,28 +1698,40 @@ class SettingsWindow(QtWidgets.QWidget):
         self.src_combo = QtWidgets.QComboBox()
         temp_src_combo = self.target.main_window.src_combo
         for i in range(temp_src_combo.count()):
-            self.src_combo.addItem(temp_src_combo.itemText(i))
+            self.src_combo.addItem(temp_src_combo.itemText(i), userData=temp_src_combo.itemData(i))
         self.src_combo.setCurrentIndex(temp_src_combo.currentIndex())
+        # Keeping src/dst combo box same between settings and main window
         self.src_combo.currentIndexChanged.connect(
             self.target.main_window.src_combo.setCurrentIndex
+        )
+        
+        self.target.main_window.src_combo.currentIndexChanged.connect(
+            self.src_combo.setCurrentIndex
         )
 
         # Copy of destination translator language
         self.dst_combo = QtWidgets.QComboBox()
         temp_dst_combo = self.target.main_window.dst_combo
         for i in range(temp_dst_combo.count()):
-            self.dst_combo.addItem(temp_dst_combo.itemText(i))
+            self.dst_combo.addItem(temp_dst_combo.itemText(i), userData=temp_dst_combo.itemData(i))
         self.dst_combo.setCurrentIndex(temp_dst_combo.currentIndex())
         self.dst_combo.currentIndexChanged.connect(
             self.target.main_window.dst_combo.setCurrentIndex
+        )
+        self.target.main_window.dst_combo.currentIndexChanged.connect(
+            self.dst_combo.setCurrentIndex
         )
 
         # Translator engine combo box
         self.translator_combo = QtWidgets.QComboBox()
         self.translator_combo.addItems(["Google Translate", "DeepL"])
-        self.translator_combo.setCurrentText("Google Translate")
+        self.translator_combo.setCurrentText(self.target.main_window.translator_engine)
         self.translator_combo.currentTextChanged.connect(self.translator_changed)
 
+        self.default_translation_button = QtWidgets.QPushButton("Reset to default")
+        self.default_translation_button.clicked.connect(self.default_translation_settings)
+        self.translation_settings_button = QtWidgets.QPushButton("Save")
+        self.translation_settings_button.clicked.connect(self.save_translation_settings)
         translator_layout.addWidget(QtWidgets.QLabel("Source Language:"))
         translator_layout.addWidget(self.src_combo)
         translator_layout.addWidget(QtWidgets.QLabel("Destination Language:"))
@@ -1716,6 +1739,11 @@ class SettingsWindow(QtWidgets.QWidget):
         translator_layout.addWidget(QtWidgets.QLabel("Translator Engine:"))
         translator_layout.addWidget(self.translator_combo)
         translator_layout.addStretch(1)
+        
+        translator_button_layout = QtWidgets.QHBoxLayout()
+        translator_button_layout.addWidget(self.translation_settings_button)
+        translator_button_layout.addWidget(self.default_translation_button)
+        translator_layout.addLayout(translator_button_layout)
 
         # -------- Misc Settings --------
         if os.path.exists("misc_settings.json"):
@@ -1732,12 +1760,14 @@ class SettingsWindow(QtWidgets.QWidget):
         misc_layout.addWidget(QtWidgets.QLabel("Snip Shortcut:"))
         misc_layout.addWidget(self.shortcut_edit)
         misc_layout.addStretch(1)
+        misc_button_layout = QtWidgets.QHBoxLayout()
+        misc_apply_button = QtWidgets.QPushButton("Save")
+        misc_apply_button.clicked.connect(self.save_misc_settings)
+        misc_button_layout.addWidget(misc_apply_button)
         misc_default_button = QtWidgets.QPushButton("Reset to default")
         misc_default_button.clicked.connect(self.default_misc_settings)
-        misc_layout.addWidget(misc_default_button)
-        misc_apply_button = QtWidgets.QPushButton("Apply")
-        misc_apply_button.clicked.connect(self.apply_misc_settings)
-        misc_layout.addWidget(misc_apply_button)
+        misc_button_layout.addWidget(misc_default_button)
+        misc_layout.addLayout(misc_button_layout)
 
         # ------- Layout finalization ---------
         self.tabs.addTab(self.display_settings_tab, "Display")
@@ -1823,7 +1853,6 @@ class SettingsWindow(QtWidgets.QWidget):
         }
         with open("display_settings.json", "w") as f:
             json.dump(data, f, indent=2)
-        self.close()
 
     def on_cancel(self):
         self.target.font_family = self.original_font_family
@@ -1856,17 +1885,38 @@ class SettingsWindow(QtWidgets.QWidget):
 
     # Translator settings functions
     def translator_changed(self, text: str):
-        print("We changed the translator to: " + text)
         self.target.main_window.translator_engine = text
+
+    def save_translation_settings(self):
+        data = {
+            "src_lang": self.src_combo.currentData(),
+            "dst_lang": self.dst_combo.currentData(),
+            "translator": self.translator_combo.currentText()
+        }
+        with open("translator_settings.json", "w") as f:
+            json.dump(data, f, indent=2)
     
+    def default_translation_settings(self):
+        src_index = self.src_combo.findData(TRANSLATION_DEFAULTS["src_lang"])
+        if src_index >= 0:
+            self.src_combo.setCurrentIndex(src_index)
+        dst_index = self.dst_combo.findData(TRANSLATION_DEFAULTS["dst_lang"])
+        if dst_index >= 0:
+            self.dst_combo.setCurrentIndex(dst_index)
+        translator_index = self.translator_combo.findData(TRANSLATION_DEFAULTS["translator"])
+        if translator_index >= 0:
+            self.translator_combo.setCurrentIndex(translator_index)
+        
+
     # Misc settings functions
-    def apply_misc_settings(self):
+    def save_misc_settings(self):
         key_name = self.shortcut_edit.keySequence().toString()
         self.target.main_window.apply_snip_shortcut(key_name)
     
     def default_misc_settings(self):
         self.shortcut_edit.setKeySequence(QtGui.QKeySequence(MISC_DEFAULTS["snip_shortcut"]))
-        self.apply_misc_settings()
+        self.save_misc_settings()
+    
     
     def closeEvent(self, event) -> None:
         event.accept()

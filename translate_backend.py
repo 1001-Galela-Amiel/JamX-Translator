@@ -104,34 +104,67 @@ def google_translate(text, src="auto", dst="en"):
 
 # Uses deepl library to send some text of x language to deepL and translate to y language
 def deepl_translate(text, source_lang="auto", target_lang="en"):
-    # Requires api key via sign-up - currently using my own (Brent)
+    
+    # DeepL requires api key via sign-up - currently using my own (Brent)
+    api_key = "8dde3083-0e62-4a9a-8526-1df5bafee39f:fx"
     print("switched to deepl")
-    api_key = "BTM1s6VGuuy6NJi"
+    # Language map for DeepL specificially, based on given options w/ Google Translate
+    lang_map = {
+        "EN": "EN-US",  # Since EN not normally accepted (specify american or british(?))
+        "PT": "PT-BR",  # One for portuguese too (though not used)
+        "NO": "NB", # Norwegian
+        "ZH-CN": "ZH-HANS", # Simplified chinese
+        "ZH-TW": "ZH_HANT", # Traditional Chinese
+        "AUTO": None # AUTO equivalent for DeepL requires sending a None
+    }
+    # Normalize language codes to uppercase
+    source = source_lang.upper()
+    target = target_lang.upper()
+    # Alter language based on above lang_map, if needed
+    source = lang_map.get(source, source)
+    # Since deepL has no auto for target language, defaulting to English
+    if target == "AUTO":
+        target = "EN-US"
+    else:
+        target = lang_map.get(target, target)
+
     translator = deepl.Translator(api_key)
-    result = translator.translate_text(
-        text,
-        source_lang=source_lang.upper(),
-        target_lang=target_lang.upper()
-    )
-    return result.text
+    # Try statement since not all languages supported by Google Translate supported by DeepL
+    try:
+        result = translator.translate_text(
+            text,
+            source.upper(),
+            target_lang=target.upper()
+        )
+        # Print statements left in commented out if you want to check the difference between DeepL and Google Translate
+        # print(f"DeepL returned: {result.text}")
+        # result2 = google_translate(text, source_lang, target_lang)
+        # print("Google Translate would return: " + result2)
+        return result.text
+    
+    # Default to Google Translate if above doesn't work
+    except Exception as e:
+        print(f"DeepL error: {e}")
+        result = google_translate(text, source_lang, target_lang)
+        # print(f"Google fallback returned: {result}")
+        return result
 
 def translate_text(src_lang, dst_lang, text, translator="Google Translate"):
     """
     Provides a cached translation helper between two language codes.
     It looks up the text in an in memory cache and only calls google_translate when there is no cached result, storing the new translation afterward.
     """
-    print("current translator is: " + translator)
     key = f"{src_lang}|{dst_lang}|{text}"
     if key in _translation_cache:
         return _translation_cache[key]
     if translator == "Google Translate":
-        print("using google translate")
         result = google_translate(text, src_lang, dst_lang)
     elif translator == "DeepL":
-        print("using deepl")
+        # print(f"using deepl | src: {src_lang} | dst: {dst_lang} | text: {text}")
         result = deepl_translate(text, src_lang, dst_lang)
+        # print(result)
     else:
-        print("there was an error")
+        result = google_translate(text, src_lang, dst_lang)
         raise ValueError(f"Unknown translator: {translator}")
     _translation_cache[key] = result
     return result

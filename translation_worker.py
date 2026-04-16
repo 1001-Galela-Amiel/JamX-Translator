@@ -18,20 +18,21 @@ class Translator(QtCore.QObject):
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self._futures = set()
 
-    def translate_async(self, src: str, dst: str, text: str, tag: Any = None) -> None:
+    def translate_async(self, src: str, dst: str, text: str, tag: Any = None, translator: str = "Google Translate") -> None:
         if not text:
             # Emit empty immediately
             self.translation_ready.emit(src, dst, text, "", tag)
             return
 
-        future = self.executor.submit(self._translate, src, dst, text)
+        future = self.executor.submit(self._translate, src, dst, text, translator)
         self._futures.add(future)
 
         def _done(fut):
             self._futures.discard(fut)
             try:
                 res = fut.result()
-            except Exception:
+            except Exception as e:
+                print(f"Translation error: {e}")
                 res = text
             # Emit the result (Qt will handle thread crossing)
             self.translation_ready.emit(src, dst, text, res, tag)
@@ -39,8 +40,8 @@ class Translator(QtCore.QObject):
         future.add_done_callback(_done)
 
     @staticmethod
-    def _translate(src: str, dst: str, text: str) -> str:
-        return translate_text(src, dst, text)
+    def _translate(src: str, dst: str, text: str, translator: str) -> str:
+        return translate_text(src, dst, text, translator)
 
     def shutdown(self) -> None:
         for f in list(self._futures):
