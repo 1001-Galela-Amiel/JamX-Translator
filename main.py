@@ -53,6 +53,9 @@ HOOK_CODEPAGE_MAP = {
     "en": 1252,
 }
 
+MISC_DEFAULTS ={
+    "snip_shortcut": "f1"
+}
 
 class CaptureWorker(QtCore.QThread):
     """Background thread that captures frames continuously."""
@@ -323,7 +326,15 @@ class MainWindow(QtWidgets.QWidget):
 
         # Reference to display window
         self.display_window = display_window
+        self.display_window.main_window = self
 
+        # Loading some settings
+        if os.path.exists("misc_settings.json"):
+            with open("misc_settings.json", "r") as f:
+                self.misc_settings = json.load(f)
+        else:
+            self.misc_settings = MISC_DEFAULTS.copy()
+        
         screen = QtWidgets.QApplication.primaryScreen()
         if screen:
             avail = screen.availableGeometry()
@@ -518,7 +529,7 @@ class MainWindow(QtWidgets.QWidget):
         self.table.itemChanged.connect(self.display_window_update)
 
         self.shortcut_thread = QtCore.QThread()
-        self.shortcut_worker = ShortcutWorker('F1')
+        self.shortcut_worker = ShortcutWorker(self.misc_settings["snip_shortcut"])
         self.shortcut_worker.moveToThread(self.shortcut_thread)
         self.shortcut_worker.pressed.connect(self.start_snip)
         self.shortcut_thread.started.connect(self.shortcut_worker.run)
@@ -1378,6 +1389,12 @@ class MainWindow(QtWidgets.QWidget):
     def open_settings(self):
         self.display_window.open_settings()
 
+    def apply_snip_shortcut(self, key_name: str):
+        self.shortcut_worker.key_sequence = key_name.lower()
+        self.misc_settings["snip_shortcut"] = key_name
+        with open("misc_settings.json", "w") as f:
+            json.dump(self.misc_settings, f, indent=4)
+
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self.display_window.close()
         self.stop_capture()
@@ -1568,7 +1585,7 @@ class SettingsWindow(QtWidgets.QWidget):
         self.setWindowTitle("Settings")
         self.resize(350, 400)
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint)
-        
+
         # Attributes for modifying display window
         self.original_font_family = target.font_family
         self.original_font_size = target.font_size
@@ -1587,7 +1604,6 @@ class SettingsWindow(QtWidgets.QWidget):
         self.misc_settings_tab = QtWidgets.QWidget()
         
         main_layout = QtWidgets.QVBoxLayout()
-
 
         # -------- Display Settings ---------
         display_layout = QtWidgets.QVBoxLayout(self.display_settings_tab)
@@ -1658,9 +1674,26 @@ class SettingsWindow(QtWidgets.QWidget):
         translator_layout.addWidget(save_button2)
 
         # -------- Misc Settings --------
+        if os.path.exists("misc_settings.json"):
+            with open("misc_settings.json", "r") as f:
+               misc_settings = json.load(f)
+        else:
+            misc_settings = MISC_DEFAULTS.copy()
+        
+        self.shortcut_edit = QtWidgets.QKeySequenceEdit(
+            QtGui.QKeySequence(misc_settings["snip_shortcut"])
+        )
+        self.shortcut_edit.setMaximumSequenceLength(1)
         misc_layout = QtWidgets.QVBoxLayout(self.misc_settings_tab)
-        save_button3 = QtWidgets.QPushButton("Save2")
-        misc_layout.addWidget(save_button3)
+        misc_layout.addWidget(QtWidgets.QLabel("Snip Shortcut:"))
+        misc_layout.addWidget(self.shortcut_edit)
+        misc_layout.addStretch(1)
+        misc_default_button = QtWidgets.QPushButton("Reset to default")
+        misc_default_button.clicked.connect(self.default_misc_settings)
+        misc_layout.addWidget(misc_default_button)
+        misc_apply_button = QtWidgets.QPushButton("Apply")
+        misc_apply_button.clicked.connect(self.apply_misc_settings)
+        misc_layout.addWidget(misc_apply_button)
 
         # ------- Layout finalization ---------
         self.tabs.addTab(self.display_settings_tab, "Display")
@@ -1777,6 +1810,15 @@ class SettingsWindow(QtWidgets.QWidget):
         self.align_combo.setCurrentText("Left")
         self.target.update()
 
+    # Misc settings functions
+    def apply_misc_settings(self):
+        key_name = self.shortcut_edit.keySequence().toString()
+        self.target.main_window.apply_snip_shortcut(key_name)
+    
+    def default_misc_settings(self):
+        self.shortcut_edit.setKeySequence(QtGui.QKeySequence(MISC_DEFAULTS["snip_shortcut"]))
+        self.apply_misc_settings()
+    
     def closeEvent(self, event) -> None:
         event.accept()
 
