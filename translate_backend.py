@@ -106,7 +106,9 @@ def google_translate(text, src="auto", dst="en"):
 def deepl_translate(text, source_lang="auto", target_lang="en"):
     
     # DeepL requires api key via sign-up - currently using my own (Brent)
-    api_key = "8dde3083-0e62-4a9a-8526-1df5bafee39f:fx"
+    # Since free version anyways (and for a translator), not too much of a risk to keep out (I think) - making secret seems too much of a hassle for use-case
+    # Try not to use DeepL too much if possible, lest I have to make another account
+    api_key = "f563ad68-c166-4e2d-b532-9dfc5cd2df97:fx"
     print("switched to deepl")
     # Language map for DeepL specificially, based on given options w/ Google Translate
     lang_map = {
@@ -115,7 +117,6 @@ def deepl_translate(text, source_lang="auto", target_lang="en"):
         "NO": "NB", # Norwegian
         "ZH-CN": "ZH-HANS", # Simplified chinese
         "ZH-TW": "ZH_HANT", # Traditional Chinese
-        "AUTO": None # AUTO equivalent for DeepL requires sending a None
     }
     # Normalize language codes to uppercase
     source = source_lang.upper()
@@ -133,14 +134,14 @@ def deepl_translate(text, source_lang="auto", target_lang="en"):
     try:
         result = translator.translate_text(
             text,
-            source.upper(),
+            source_lang=None if source_lang.lower() == "auto" else source_lang.upper(),
             target_lang=target.upper()
         )
         # Print statements left in commented out if you want to check the difference between DeepL and Google Translate
         # print(f"DeepL returned: {result.text}")
         # result2 = google_translate(text, source_lang, target_lang)
         # print("Google Translate would return: " + result2)
-        return result.text
+        # return result.text
     
     # Default to Google Translate if above doesn't work
     except Exception as e:
