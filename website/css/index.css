@@ -229,6 +229,17 @@ nav {
   gap: 20px;
 }
 
+.feature-list li {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+@media (max-width: 768px) {
+  .feature-list {
+    grid-template-columns: 1fr;
+  }
+}
+
 .video-player {
   width: 400px;
   height: auto;
