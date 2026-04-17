@@ -2,6 +2,7 @@ PySide6
 opencv-python
 pillow
 pywin32
+pyobjc-framework-Quartz
 mss
 dxcam
 argostranslate
@@ -10,4 +11,6 @@ numpy<2
 onnxruntime==1.17.3
 pynput
 requests>=2.32.3
+elevenlabs
+python-dotenv
 deepl

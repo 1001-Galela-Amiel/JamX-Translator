@@ -1,8 +1,7 @@
 body {
   background-color: #082140;
   max-width: 100%;
-  margin: 0;
-  padding: 0;
+  padding: 1px 50px 1px 50px;
   align-items: center;
   width: 90%;
 }
@@ -16,22 +15,25 @@ body {
 
 .mac-button,
 .windows-button {
-  padding: 15px 25px;
-  margin: 10px auto;
+  padding: 15px 15px;
+  margin: 30px auto;
   display: block;
   border: 1px solid black;
-  border-radius: 25px;
-  background: lightblue;
+  border-radius: 35px;
+  background: white;
   color: black;
-  font-size: 16px;
+  font-size: 14px;
+  max-height: 100px;
+  font-weight: bold;
+  font-family: "Russo One", sans-serif;
 }
 
 .mac-button:hover,
 .windows-button:hover {
   transition: all 150ms ease-in-out;
   cursor: pointer;
-  background: white;
-  color: pink;
+  background: black;
+  color: #ff00ff;
 }
 
 .note {
@@ -48,6 +50,7 @@ body {
 
 .download-page {
   display: flex;
+  flex-wrap: wrap;
   flex-direction: column;
   align-items: center;
   gap: 30px;
@@ -56,10 +59,13 @@ body {
   max-width: 900px;
   min-height: 80vh;
   border-radius: 25px;
-  margin: 50px auto;
-  padding: 50px 30px;
+  margin: 100px auto;
+  padding: 100px auto;
   max-width: 900px;
-  background-color: rgba(26, 26, 46, 0.5);
+  background-color: rgba(15, 18, 34, 0.1);
+  backdrop-filter: blur(10px);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .download-page1,
@@ -75,15 +81,3 @@ body {
   box-shadow: 0 0 5px rgba(0, 255, 255, 0.4);
 }
 
-img {
-  border-radius: 40px;
-  max-height: 500px;
-  display: block;
-  margin: 0 auto;
-}
-
-.download-page.show,
-.download-page.show .download-page1,
-.download-page.show .download-page2 {
-  display: block;
-}

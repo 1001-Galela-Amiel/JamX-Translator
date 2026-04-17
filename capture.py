@@ -19,6 +19,7 @@ if WINDOWS:
 # ------------------ macOS imports ------------------
 if MAC:
     import Quartz
+    from mac_capture import capture_window_image as mac_capture_window_image
 
 # ------------------ Windows helpers ------------------
 if WINDOWS:
@@ -221,17 +222,37 @@ class WindowLister:
 
         if MAC:
             window_info = Quartz.CGWindowListCopyWindowInfo(
-                Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
+                Quartz.kCGWindowListOptionOnScreenOnly, 
+                Quartz.kCGNullWindowID
             )
             for w in window_info:
                 window_id = w.get("kCGWindowNumber")
                 owner = w.get("kCGWindowOwnerName", " ")
                 name = w.get("kCGWindowName", " ")
-                if window_id and (owner or name):
-                    windows.append((window_id, f"{owner} - {name}"))
+                bounds = w.get("kCGWindowBounds", {})
+                
+                if not window_id:
+                    continue
+                
+                width = int (bounds.get("Width", 0)or 0)
+                height = int (bounds.get("Height", 0)or 0)
+                layer = int (w.get("kCGWindowLayer", 0)or 0)
+                alpha = float (w.get("kCGWindowAlpha", 1.0)or 0)
+                
+                
+                if width <= 0 or height <= 1:
+                    continue
+                if alpha <= 0.0:
+                    continue
+                if layer != 0:
+                    continue
+                
+                title = f"{owner} - {name}".strip(" -")
+                windows.append((window_id, title))
             return windows
-
         return []
+                
+                
 
 # ------------------ Capture functions ------------------
 def capture_window_bgra(hwnd: int, backend: str = "auto") -> Optional[np.ndarray]:
@@ -263,20 +284,30 @@ def capture_window_bgra(hwnd: int, backend: str = "auto") -> Optional[np.ndarray
         return None
 
     if MAC:
-        from mac_capture import capture_window_image 
-        img = capture_window_image(hwnd)
+        try:
+            img = mac_capture_window_image(int(hwnd))
+        except Exception:
+            return None
         if img is None:
             return None
-        arr = np.array(img)
+        
+        arr = np.asarray(img, dtype=np.uint8)
+        
+        if arr.ndim != 3:
+            return None
+        
         if arr.shape[2] == 3:
             b, g, r = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
             a = np.full_like(b, 255)
             arr = np.dstack([b, g, r, a])
-        elif arr.shape[2] == 4:
+            return arr.astype(np.uint8, copy=False)
+        
+        if arr.shape[2] == 4:
             b, g, r, a = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2], arr[:, :, 3]
             arr = np.dstack([b, g, r, a])
-        return arr.astype(np.uint8)
-
+            return arr.astype(np.uint8)
+        
+        return None
     return None
 
 def capture_window_image(hwnd: int, backend: str = "auto") -> Optional[Image.Image]:

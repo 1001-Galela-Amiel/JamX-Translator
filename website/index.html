@@ -24,28 +24,161 @@
   </head>
   <body>
     <nav>
-      <a href="index.html">Home</a>
-      <a href="download.html">Download</a>
-      <a href="about.html">About</a>
-    </nav>
+    <div class="menu">
+      <button class="menu-btn" onclick="toggleMenu()">☰</button>
+      <div class="menu-content">
+        <a href="index.html">Home</a>
+        <a href="download.html">Download</a>
+        <a href="about.html">About</a>
+      </div>
+    </div></nav>
     <h1 class="mainheading">JamX - Game Translator</h1>
     <div class="images-container">
       <div class="image-grid">
-        <img src="photos/images.jpeg" alt="jamx photo1" />
-        <img src="photos/Unknown-1.jpeg" alt="jamx photo2" />
+        <img
+          src="photos/TranslatorToolImage1.png"
+          alt="Screenshot images of the Translator Tool to display its interface"
+        />
+        <img
+          src="photos/TranslatorToolImage2.png"
+          alt="Screenshot images of the Translator Tool to display its interface"
+        />
 
-        <img src="photos/Unknown-2.jpeg" alt="jamx photo3" />
-        <img src="photos/Unknown.jpeg" alt="jamx photo4" />
+        <img
+          src="photos/TranslatorToolImage3.png"
+          alt="Screenshot images of the Translator Tool to display its interface"
+        />
+        <img
+          src="photos/TranslatorToolImage4.png"
+          alt="Screenshot images of the Translator Tool to display its interface"
+        />
       </div>
     </div>
-    <h2 class="support">
-    Click the button below to download the translator for the Android and Mac version.
-    </h2>
-    <button class="firstButton">DOWNLOAD</button>
+    <p class="index-description">
+      <strong>JamX</strong> is a software tool designed to let users translate
+      computer games, allowing in-game text to be edited from one language to
+      another and shared with others.
+    </p>
+    <div class="features">
+      <h2 class="feature-heading">Key Features</h2>
+      <ul class="feature-list">
+        <li>
+          <p>Translate game text in real-time</p>
+          <video controls class="video-player">
+            <source src="videos/RealTimeTranslator.mp4" type="video/mp4" />
+            Your browser does not support the video tag.
+          </video>
+          <details>
+            <summary>View Transcript</summary>
+            <p>
+              The video shows JamX capturing text from the screen and processing
+              it with OCR in real-time
+            </p>
+          </details>
+        </li>
+
+        <li>
+          <p>Support for multiple languages</p>
+          <video controls class="video-player">
+            <source src="videos/SupportMultipleLangs.mp4" type="video/mp4" />
+          </video>
+          <details>
+            <summary>View Transcript</summary>
+            <p>
+              The video shows the system detecting text in different languages
+              and converting it into speech output dynamically.
+            </p>
+          </details>
+        </li>
+
+        <li>
+          <p>In-game Text Translation</p>
+          <video controls class="video-player">
+            <source src="videos/InGameTextTranslation.mp4" type="video/mp4" />
+          </video>
+          <details>
+            <summary>View Transcript</summary>
+            <p>
+              The video demonstrates the translator's ability to capture and
+              translate in-game text, showcasing its real-time translation
+              capabilities.
+            </p>
+          </details>
+        </li>
+
+        <li>
+          <p>Easy to use interface</p>
+          <video controls class="video-player">
+            <source src="videos/EasyToUseInterface.mp4" type="video/mp4" />
+          </video>
+          <details>
+            <summary>View Transcript</summary>
+            <p>
+              The video highlights the user-friendly interface of the
+              translator, showing how users can easily select and capture
+              windows for translation.
+            </p>
+          </details>
+        </li>
+      </ul>
+    </div>
+    <section class="how-it-works">
+      <h2 class="how-it-works-heading">How It Works</h2>
+      <ol class="how-it-works-list">
+        <li>The user selects or captures a window on the screen.</li>
+        <li>The application extracts image frames from that window.</li>
+        <li>OCR processes the captured content to detect text.</li>
+        <li>
+          The detected text is translated and optionally converted to speech
+          output.
+        </li>
+      </ol>
+    </section>
+
     <hr />
-    <h2 class="support">
-      Supports Android and Mac systems.
+    <h2 class="subheading">
+      CS 426 Senior Project in Computer Science, Spring 2025 - University of
+      Nevada,Reno-CSE Department
     </h2>
+    <h2 class="subheading1">
+      <strong>Instructors: Dr. David Feil-Seifer, Dr. Vinh Le. </strong>
+    </h2>
+    <p class="team-number">Team 37 - JamX Translator</p>
+    <div class="team-members">
+      <div class="member">
+        <img
+          src="https://avatars.githubusercontent.com/u/104628122?v=4"
+          alt="JohnnieM"
+          width="100"
+          height="100"
+        />
+        <p>
+          <a href="https://github.com/johnniemorrisSC">Johnnie Morris</a>
+        </p>
+      </div>
+
+      <div class="member">
+        <img
+          src="https://avatars.githubusercontent.com/u/52412313?v=4"
+          alt="mary-ann"
+          width="100"
+          height="100"
+        />
+        <p>
+          <a href="https://github.com/1107-Mary-Ann-Affo">Mary-Ann Affo</a>
+        </p>
+      </div>
+
+      <div class="member">
+        <img
+          src="https://avatars.githubusercontent.com/u/105803907?v=4"
+          alt="eliaskordelakos"
+          width="100"
+          height="100"
+        />
+        <p><a href="https://github.com/1001-Galela-Amiel">Brent Galela</a></p>
+      </div>
+    </div>
 
     <script src="js/script.js"></script>
   </body>

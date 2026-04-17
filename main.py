@@ -26,6 +26,7 @@ from ocr_backend import ocr_image_data
 from translate_backend import LANG_MAP, translate_text
 from translation_worker import Translator
 from snipper import Snipper
+from textspeech import start_speech_thread, cleanup_speech, speak, set_voice_enabled
 
 try:
     from luna_worker import LunaHookWorker
@@ -394,6 +395,8 @@ class MainWindow(QtWidgets.QWidget):
         self.pending_translation_keys: set[str] = set()
         self.pending_embed_by_key: Dict[str, List[str]] = {}
 
+        start_speech_thread()
+        
         self.worker: Optional[CaptureWorker] = None
         self.ocr_worker: Optional[OCRWorker] = None
         self.hook_worker: Optional[Any] = None
@@ -444,14 +447,25 @@ class MainWindow(QtWidgets.QWidget):
         ocr_layout = QtWidgets.QVBoxLayout(self.ocr_tab)
         self.preview = PreviewWidget()
         ocr_layout.addWidget(self.preview, 1)
-
-        ctrl = QtWidgets.QHBoxLayout()
+        
+        
+        self.ocr_expand_button = QtWidgets.QPushButton("OCR Options ▼")
+        self.ocr_expand_button.setCheckable(True)
+        self.ocr_expand_button.setChecked(False)
+        self.ocr_expand_button.clicked.connect(self.toggle_ocr_section)
+        ocr_layout.addWidget(self.ocr_expand_button)
+        
+        self.ocr_section = QtWidgets.QWidget()
+        self.ocr_section_layout = QtWidgets.QVBoxLayout(self.ocr_section)
+        self.ocr_section.hide()
+        
         self.interval_spin = QtWidgets.QSpinBox()
         self.interval_spin.setRange(5, 2000)
         self.interval_spin.setValue(50)
         self.ocr_spin = QtWidgets.QSpinBox()
         self.ocr_spin.setRange(100, 5000)
         self.ocr_spin.setValue(300)
+        
         self.capture_backend_combo = QtWidgets.QComboBox()
         self.capture_backend_combo.addItem("Adaptive", userData="adaptive")
         self.capture_backend_combo.addItem("DXGI", userData="dxgi")
@@ -461,29 +475,34 @@ class MainWindow(QtWidgets.QWidget):
 
         self.manual_ocr_button = QtWidgets.QPushButton("Manual OCR")
         self.manual_ocr_button.clicked.connect(self.start_snip)
+        
         self.preprocessing_settings_button = QtWidgets.QPushButton("Preprocessing Settings")
         self.preprocessing_settings_button.clicked.connect(self.open_preprocessing_settings)
+        
         self.enable_preprocessing_checkbox = QtWidgets.QCheckBox("Enable preprocessing")
         self.enable_preprocessing_checkbox.stateChanged.connect(self.preprocessing_enable)
         
+        ctrl = QtWidgets.QHBoxLayout()
         ctrl.addWidget(QtWidgets.QLabel("Frame (ms)"))
         ctrl.addWidget(self.interval_spin)
         ctrl.addSpacing(20)
-        ctrl.addWidget(QtWidgets.QLabel("OCR (ms)"))
+        ctrl.addWidget(QtWidgets.QLabel("OCR(ms)"))
         ctrl.addWidget(self.ocr_spin)
         ctrl.addSpacing(20)
         ctrl.addWidget(QtWidgets.QLabel("Capture"))
         ctrl.addWidget(self.capture_backend_combo)
         ctrl.addStretch(1)
-        ctrl.addWidget(self.enable_preprocessing_checkbox)
-        ctrl.addWidget(self.preprocessing_settings_button)
-        ctrl.addWidget(self.manual_ocr_button)
-
+        
+        self.ocr_section_layout.addLayout(ctrl)
+        self.ocr_section_layout.addWidget(self.enable_preprocessing_checkbox)
+        self.ocr_section_layout.addWidget(self.preprocessing_settings_button)
+        self.ocr_section_layout.addWidget(self.manual_ocr_button)
+        ocr_layout.addWidget(self.ocr_section)
+        
         snip_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F1"), self)
         snip_shortcut.activated.connect(self.start_snip)
         
-        ocr_layout.addLayout(ctrl)
-
+        
         inj_layout = QtWidgets.QVBoxLayout(self.inj_tab)
         embed_row = QtWidgets.QHBoxLayout()
         self.embed_toggle = QtWidgets.QCheckBox("Enable in-game subtitle replacement")
@@ -556,10 +575,17 @@ class MainWindow(QtWidgets.QWidget):
         self.settings_button = QtWidgets.QPushButton("Settings")
         self.save_btn = QtWidgets.QPushButton("Save")
         self.help_btn = QtWidgets.QPushButton("Help")
+        
+        self.voice_toggle = QtWidgets.QCheckBox("Enable Text-to-Speech")
+        self.voice_toggle.setChecked(False)
+        self.voice_toggle.toggled.connect(self.on_voice_toggled)
+         
+        
         btn_row.addWidget(self.apply_btn)
         btn_row.addWidget(self.settings_button)
         btn_row.addWidget(self.save_btn)
         btn_row.addWidget(self.help_btn)
+        btn_row.addWidget(self.voice_toggle)
         right_col.addLayout(btn_row)
 
         self.win_list.popup_about_to_show.connect(self.refresh_windows)
@@ -719,6 +745,16 @@ class MainWindow(QtWidgets.QWidget):
             return
         if self.worker and self.attached_hwnd:
             self.start_capture()
+            
+    def toggle_ocr_section(self):
+        visible = self.ocr_expand_button.isChecked()
+        self.ocr_section.setVisible(visible)
+
+        if visible:
+            self.ocr_expand_button.setText("OCR Options ▼")
+        else:
+            self.ocr_expand_button.setText("OCR Options ▶")
+
 
     def _refresh_preview_overlay(self) -> None:
         try:
@@ -1322,6 +1358,14 @@ class MainWindow(QtWidgets.QWidget):
         self.pending_translation_keys.discard(key)
         self.translation_cache[key] = trans
         self._resolve_embed_requests_for_key(key, trans)
+        
+        if trans.strip():
+            if isinstance(tag, dict):
+                ttype = tag.get("type")
+                if ttype == "hook":
+                    speak(trans)
+                elif len(trans.split()) >= 3 and len(trans) >= 12:
+                    speak(trans)
 
         if tag:
             ttype = tag.get("type")
@@ -1421,6 +1465,7 @@ class MainWindow(QtWidgets.QWidget):
                         break
         else:
             self.display_window.hide()
+            
 
     def show_help(self) -> None:
         msg = (
@@ -1440,6 +1485,16 @@ class MainWindow(QtWidgets.QWidget):
             " LunaTranslator_x64_win10 folder exists, or set LUNA_TRANSLATOR_DIR. Luna Hook does not work with MacOS system."
         )
         QtWidgets.QMessageBox.information(self, "Help", msg)
+             
+    def on_voice_toggled(self, checked: bool) -> None:
+        set_voice_enabled(checked)
+        
+        if checked:
+            self.status.setText("Voice output enabled.")
+        else:
+            self.status.setText("Voice output disabled.")
+            
+        
 
     def display_window_update(self, item: QtWidgets.QTableWidgetItem) -> None:
         if item is None:
@@ -1475,6 +1530,7 @@ class MainWindow(QtWidgets.QWidget):
         self.display_window.close()
         self.stop_capture()
         self.stop_hook()
+        cleanup_speech()
         try:
             self.translator.shutdown()
         except Exception:
@@ -1972,7 +2028,7 @@ class SettingsWindow(QtWidgets.QWidget):
     
     
     def closeEvent(self, event) -> None:
-        event.accept()
+        event.accept()        
 
 
 """Window that appears after applying Manual OCR, or applying preprocessing to autoOCR, for debug purposes"""
