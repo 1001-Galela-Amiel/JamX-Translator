@@ -858,7 +858,8 @@ class MainWindow(QtWidgets.QWidget):
         self.latest_ocr = selected_entries
 
         self.ocr_results = []
-        self.table.setRowCount(0)
+        # Temporarily removing this so using OCR does not reset results on table to the right
+        # self.table.setRowCount(0)
 
         src_lang = self.src_combo.currentData()
         dst_lang = self.dst_combo.currentData()
