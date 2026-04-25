@@ -150,14 +150,15 @@ def deepl_translate(text, source_lang="auto", target_lang="en"):
         # print(f"Google fallback returned: {result}")
         return result
 
-def translate_text(src_lang, dst_lang, text, translator="Google Translate"):
+def translate_text(src_lang, dst_lang, text, translator="Google Translate", translation_cache=None):
     """
     Provides a cached translation helper between two language codes.
     It looks up the text in an in memory cache and only calls google_translate when there is no cached result, storing the new translation afterward.
     """
-    key = f"{src_lang}|{dst_lang}|{text}"
-    if key in _translation_cache:
-        return _translation_cache[key]
+
+    if translation_cache and text in translation_cache:
+        return translation_cache[text]
+
     if translator == "Google Translate":
         result = google_translate(text, src_lang, dst_lang)
     elif translator == "DeepL":
@@ -167,5 +168,4 @@ def translate_text(src_lang, dst_lang, text, translator="Google Translate"):
     else:
         result = google_translate(text, src_lang, dst_lang)
         raise ValueError(f"Unknown translator: {translator}")
-    _translation_cache[key] = result
     return result

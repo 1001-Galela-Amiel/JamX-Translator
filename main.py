@@ -563,6 +563,7 @@ class MainWindow(QtWidgets.QWidget):
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
         self.table.cellClicked.connect(self.on_row_selected)
+        self.table.cellChanged.connect(self.on_cell_changed)
         self.table.itemSelectionChanged.connect(self.on_select)
         right_col.addWidget(self.table, 1)
 
@@ -574,6 +575,7 @@ class MainWindow(QtWidgets.QWidget):
         self.apply_btn = QtWidgets.QPushButton("Apply")
         self.settings_button = QtWidgets.QPushButton("Settings")
         self.save_btn = QtWidgets.QPushButton("Save")
+        self.load_btn = QtWidgets.QPushButton("Load")
         self.help_btn = QtWidgets.QPushButton("Help")
         
         self.voice_toggle = QtWidgets.QCheckBox("Enable Text-to-Speech")
@@ -584,6 +586,7 @@ class MainWindow(QtWidgets.QWidget):
         btn_row.addWidget(self.apply_btn)
         btn_row.addWidget(self.settings_button)
         btn_row.addWidget(self.save_btn)
+        btn_row.addWidget(self.load_btn)
         btn_row.addWidget(self.help_btn)
         btn_row.addWidget(self.voice_toggle)
         right_col.addLayout(btn_row)
@@ -596,6 +599,7 @@ class MainWindow(QtWidgets.QWidget):
         self.capture_backend_combo.currentIndexChanged.connect(self.on_capture_backend_mode_changed)
         self.apply_btn.clicked.connect(self.apply_translation)
         self.save_btn.clicked.connect(self.save_translations)
+        self.load_btn.clicked.connect(self.load_translations)
         self.settings_button.clicked.connect(self.open_settings)
         self.help_btn.clicked.connect(self.show_help)
         self.text_color_btn.clicked.connect(self.choose_text_overlay_color)
@@ -1286,7 +1290,7 @@ class MainWindow(QtWidgets.QWidget):
             self._resolve_embed_requests_for_key(key, cached)
             return
         try:
-            trans = translate_text(src_lang, dst_lang, text, self.translator_engine)
+            trans = translate_text(src_lang, dst_lang, text, self.translator_engine, self.translation_cache)
         except Exception:
             trans = text
         self.translation_cache[key] = trans
@@ -1433,14 +1437,71 @@ class MainWindow(QtWidgets.QWidget):
             self.display_signal.emit(text)
         self.status.setText("Applied translation to selected.")
 
+    # Save current table contents as flat dict in specified json
     def save_translations(self) -> None:
         try:
-            with open(TRANSLATION_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.ocr_results, f, ensure_ascii=False, indent=2)
+            # Choosing file to write out to
+            TRANSLATION_FILE, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                "Save As",                      # Dialog title
+                "translation.json",                 # Default filename
+                "JSON Files (*.json);;All Files (*)"  # File type filter
+            )
+            # Fill json with current source text and translation text in table
+            data = {}
+            for row in range(self.table.rowCount()):
+                source_item = self.table.item(row, 0)
+                translation_item = self.table.item(row, 1)
+
+                source_text = source_item.text() if source_item else ""
+                translation = translation_item.text()  if translation_item else ""
+
+                # Skip over empty source texts
+                if source_text:
+                    data[source_text] = translation
+
+            # Write current translation to chosen file path
+            if TRANSLATION_FILE:
+                if not TRANSLATION_FILE.endswith(".json"):
+                    file_path += ".json"
+                with open(TRANSLATION_FILE, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
             self.status.setText(f"Saved translations to {TRANSLATION_FILE}")
+
         except Exception as e:
             self.status.setText(f"Failed to save translations: {e}")
 
+    def load_translations(self) -> None:
+        TRANSLATION_FILE, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                "Open File",                      # Dialog title
+                "",                 # Default filename
+                "JSON Files (*.json);;All Files (*)"  # File type filter
+            )
+        if TRANSLATION_FILE:
+            with open(TRANSLATION_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            self.table.setRowCount(0)
+            self.translation_cache = {}
+
+            for source_text, translation in data.items():
+                self.translation_cache[source_text] = translation
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+                self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(source_text))
+                self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(translation))
+
+    # Whenever new information is added to the table, add to translationc cache
+    def on_cell_changed(self, row: int, col: int) -> None:
+        source_item = self.table.item(row, 0)
+        translation_item = self.table.item(row, 1)
+
+        source_text = source_item.text() if source_item else ""
+        translation_text = translation_item.text() if translation_item else ""
+
+        if source_text:
+            self.translation_cache[source_text] = translation_text
     def choose_text_overlay_color(self) -> None:
         color = QtWidgets.QColorDialog.getColor(
             self.preview.text_overlay_color, self, "Choose overlay text color"
@@ -1870,9 +1931,9 @@ class SettingsWindow(QtWidgets.QWidget):
         misc_layout.addWidget(self.shortcut_edit)
         misc_layout.addStretch(1)
         misc_button_layout = QtWidgets.QHBoxLayout()
-        misc_apply_button = QtWidgets.QPushButton("Save")
-        misc_apply_button.clicked.connect(self.save_misc_settings)
-        misc_button_layout.addWidget(misc_apply_button)
+        misc_save_button = QtWidgets.QPushButton("Save")
+        misc_save_button.clicked.connect(self.save_misc_settings)
+        misc_button_layout.addWidget(misc_save_button)
         misc_default_button = QtWidgets.QPushButton("Reset to default")
         misc_default_button.clicked.connect(self.default_misc_settings)
         misc_button_layout.addWidget(misc_default_button)
