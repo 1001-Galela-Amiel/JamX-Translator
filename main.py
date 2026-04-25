@@ -863,30 +863,43 @@ class MainWindow(QtWidgets.QWidget):
 
         src_lang = self.src_combo.currentData()
         dst_lang = self.dst_combo.currentData()
-
-        for row, e in enumerate(selected_entries):
+        for e in (selected_entries):
+            row = self.table.rowCount()
             src_text = e.get("text", "")
-            self.table.insertRow(row)
-            self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(src_text))
-            bbox_str = str(e.get("bbox", ""))
-            self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(bbox_str))
-
+            bbox_str = str(e.get("bbox", "")) 
             key = f"{src_lang}|{dst_lang}|{src_text}"
-            cached = self.translation_cache.get(key)
-            if cached is not None:
-                self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(cached))
+            cached = None
+            # Populate with new row if OCR result does not exist
+            if key not in self.translation_cache:
+                self.table.insertRow(row)
+                self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(src_text))
+                self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(bbox_str))
+                cached = self.translation_cache.get(key)
+                if src_text.strip() and cached is None and key not in self.pending_translation_keys:
+                    self.pending_translation_keys.add(key)
+                    self.translator.translate_async(
+                        src_lang,
+                        dst_lang,
+                        src_text,
+                        tag={"type": "auto", "row": row},
+                        translator=self.translator_engine,
+                        translation_cache=self.translation_cache
+                    )
+            # Otherwise, use existing translation
             else:
-                self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(""))
+                # Get row where extracted text appears
+                found_row = -1
+                for entry in range(self.table.rowCount()):
+                    item = self.table.item(entry, 0)
+                    if item and item.text() == src_text:
+                        found_row = entry
+                        break
 
-            if src_text.strip() and cached is None and key not in self.pending_translation_keys:
-                self.pending_translation_keys.add(key)
-                self.translator.translate_async(
-                    src_lang,
-                    dst_lang,
-                    src_text,
-                    tag={"type": "auto", "row": row},
-                    translator=self.translator_engine
-                )
+                if found_row != -1:
+                    cached = self.translation_cache.get(key)
+                    if cached is not None:
+                        self.table.setItem(found_row, 1, QtWidgets.QTableWidgetItem(cached))
+                        self.table.setItem(found_row, 2, QtWidgets.QTableWidgetItem(bbox_str))
 
             self.ocr_results.append({
                 "text": src_text,
@@ -1258,7 +1271,8 @@ class MainWindow(QtWidgets.QWidget):
             dst_lang,
             text,
             tag={"type": "hook", "row": row, "ts": timestamp},
-            translator=self.translator_engine
+            translator=self.translator_engine,
+            translation_cache=self.translation_cache
         )
 
     def on_hook_status(self, message: str) -> None:
@@ -1348,7 +1362,7 @@ class MainWindow(QtWidgets.QWidget):
         dst_lang = self.dst_combo.currentData()
 
         self.table.setItem(row, 1, QtWidgets.QTableWidgetItem("(translating...)"))
-        self.translator.translate_async(src_lang, dst_lang, src_text, tag={"type": "manual", "row": row}, translaator=self.translator_engine)
+        self.translator.translate_async(src_lang, dst_lang, src_text, tag={"type": "manual", "row": row}, translaator=self.translator_engine, translation_cache=self.translation_cache)
 
     def translate_and_update(self, src: str, dst: str, text: str) -> None:
         if not text:
@@ -1357,7 +1371,7 @@ class MainWindow(QtWidgets.QWidget):
         if key in self.translation_cache or key in self.pending_translation_keys:
             return
         self.pending_translation_keys.add(key)
-        self.translator.translate_async(src, dst, text, tag={"type": "auto"}, translator=self.translator_engine)
+        self.translator.translate_async(src, dst, text, tag={"type": "auto"}, translator=self.translator_engine, translation_cache=self.translation_cache)
 
     def on_translation_ready(self, src: str, dst: str, text: str, trans: str, tag: Any) -> None:
         key = f"{src}|{dst}|{text}"
@@ -1486,9 +1500,13 @@ class MainWindow(QtWidgets.QWidget):
 
             self.table.setRowCount(0)
             self.translation_cache = {}
-
+        
             for source_text, translation in data.items():
-                self.translation_cache[source_text] = translation
+                src_lang = self.src_combo.currentData()
+                dst_lang = self.dst_combo.currentData()
+                # Instantiate translation cache with compound key
+                key = f"{src_lang}|{dst_lang}|{source_text}"
+                self.translation_cache[key] = translation
                 row = self.table.rowCount()
                 self.table.insertRow(row)
                 self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(source_text))

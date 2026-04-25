@@ -109,7 +109,6 @@ def deepl_translate(text, source_lang="auto", target_lang="en"):
     # Since free version anyways (and for a translator), not too much of a risk to keep out (I think) - making secret seems too much of a hassle for use-case
     # Try not to use DeepL too much if possible, lest I have to make another account
     api_key = "f563ad68-c166-4e2d-b532-9dfc5cd2df97:fx"
-    print("switched to deepl")
     # Language map for DeepL specificially, based on given options w/ Google Translate
     lang_map = {
         "EN": "EN-US",  # Since EN not normally accepted (specify american or british(?))
@@ -141,13 +140,13 @@ def deepl_translate(text, source_lang="auto", target_lang="en"):
         # print(f"DeepL returned: {result.text}")
         # result2 = google_translate(text, source_lang, target_lang)
         # print("Google Translate would return: " + result2)
-        # return result.text
+        return result.text
     
     # Default to Google Translate if above doesn't work
     except Exception as e:
         print(f"DeepL error: {e}")
         result = google_translate(text, source_lang, target_lang)
-        # print(f"Google fallback returned: {result}")
+        print(f"Google fallback returned: {result}")
         return result
 
 def translate_text(src_lang, dst_lang, text, translator="Google Translate", translation_cache=None):
@@ -155,9 +154,9 @@ def translate_text(src_lang, dst_lang, text, translator="Google Translate", tran
     Provides a cached translation helper between two language codes.
     It looks up the text in an in memory cache and only calls google_translate when there is no cached result, storing the new translation afterward.
     """
-
-    if translation_cache and text in translation_cache:
-        return translation_cache[text]
+    key = f"{src_lang}|{dst_lang}|{text}"
+    if translation_cache and translation_cache.get(key):
+        return translation_cache[key]
 
     if translator == "Google Translate":
         result = google_translate(text, src_lang, dst_lang)
