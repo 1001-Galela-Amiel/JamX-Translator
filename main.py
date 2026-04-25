@@ -923,8 +923,9 @@ class MainWindow(QtWidgets.QWidget):
         import cv2
         from PIL import Image
         temp_img = cv2.imread("logs/debug_frame.png")
-        processed_img = removeBackground(temp_img)
-        img = Image.fromarray(temp_img)
+        temp_img2 = cv2.cvtColor(temp_img, cv2.COLOR_BGR2RGB)
+        processed_img = removeBackground(temp_img2)
+        img = Image.fromarray(temp_img2)
         processed_img = Image.fromarray(processed_img)
         self.image_window = ImageWindow(img, processed_img, parent_window=self)
         self.image_window.show()
