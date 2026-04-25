@@ -548,7 +548,7 @@ class MainWindow(QtWidgets.QWidget):
         self.text_color_btn = QtWidgets.QPushButton("Text Color")
         lang_row.addWidget(self.text_color_btn)
         self.overlay_toggle = QtWidgets.QCheckBox("Show translation overlay")
-        self.overlay_toggle.setChecked(True)
+        self.overlay_toggle.setChecked(False)
         lang_row.addWidget(self.overlay_toggle)
         right_col.addLayout(lang_row)
 
@@ -923,8 +923,9 @@ class MainWindow(QtWidgets.QWidget):
         import cv2
         from PIL import Image
         temp_img = cv2.imread("logs/debug_frame.png")
-        processed_img = removeBackground(temp_img)
-        img = Image.fromarray(temp_img)
+        temp_img2 = cv2.cvtColor(temp_img, cv2.COLOR_BGR2RGB)
+        processed_img = removeBackground(temp_img2)
+        img = Image.fromarray(temp_img2)
         processed_img = Image.fromarray(processed_img)
         self.image_window = ImageWindow(img, processed_img, parent_window=self)
         self.image_window.show()
@@ -1776,7 +1777,7 @@ class SettingsWindow(QtWidgets.QWidget):
         super().__init__()
         self.target = target
         self.setWindowTitle("Settings")
-        self.resize(350, 400)
+        self.resize(350, 300)
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint)
 
         # Tab layout initialization
@@ -1804,16 +1805,14 @@ class SettingsWindow(QtWidgets.QWidget):
         self.font_combo = QtWidgets.QFontComboBox()
         self.font_combo.setCurrentFont(QtGui.QFont(target.font_family))
         self.font_combo.currentFontChanged.connect(self.font_changed)
-        display_layout.addWidget(font_label)
-        display_layout.addWidget(self.font_combo)
+        
 
         size_label = QtWidgets.QLabel("Font Size:")
         self.size_spinner = QtWidgets.QSpinBox()
         self.size_spinner.setRange(6, 40)
         self.size_spinner.setValue(target.font_size)
         self.size_spinner.valueChanged.connect(self.size_changed)
-        display_layout.addWidget(size_label)
-        display_layout.addWidget(self.size_spinner)
+        
 
         self.bold_checkbox = QtWidgets.QCheckBox("Bold?")
         self.bold_checkbox.setChecked(target.bold)
@@ -1821,32 +1820,42 @@ class SettingsWindow(QtWidgets.QWidget):
         self.italic_checkbox = QtWidgets.QCheckBox("Italic?")
         self.italic_checkbox.setChecked(target.italic)
         self.italic_checkbox.stateChanged.connect(self.italic_changed)
-        display_layout.addWidget(self.bold_checkbox)
-        display_layout.addWidget(self.italic_checkbox)
+        
 
         self.text_color_button = QtWidgets.QPushButton("Choose text color")
         self.text_color_button.clicked.connect(self.color_changed)
-        display_layout.addWidget(self.text_color_button)
+        
 
         self.bg_color_button = QtWidgets.QPushButton("Choose background color")
         self.bg_color_button.clicked.connect(self.background_changed)
-        display_layout.addWidget(self.bg_color_button)
+        
 
         opacity_label = QtWidgets.QLabel("Opacity:")
         self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(1, 100)
         self.opacity_slider.setValue(int(target.bg_alpha/255*100))
         self.opacity_slider.valueChanged.connect(self.opacity_changed)
-        display_layout.addWidget(opacity_label)
-        display_layout.addWidget(self.opacity_slider)
+        
 
         align_label = QtWidgets.QLabel("Alignment:")
         self.align_combo = QtWidgets.QComboBox()
         self.align_combo.addItems(["Left", "Center", "Right", "Top", "Bottom"])
         self.align_combo.setCurrentText("Left")
         self.align_combo.currentTextChanged.connect(self.alignment_changed)
-        display_layout.addWidget(align_label)
-        display_layout.addWidget(self.align_combo)
+        
+        display_layout.addWidget(self.text_color_button)
+        display_layout.addWidget(self.bg_color_button)
+        display_layout.addWidget(opacity_label)
+        display_layout.addWidget(self.opacity_slider)
+        display_layout.addWidget(font_label)
+        display_layout.addWidget(self.font_combo)
+        display_layout.addWidget(size_label)
+        display_layout.addWidget(self.size_spinner)
+        # display_layout.addWidget(align_label)
+        # display_layout.addWidget(self.align_combo)
+        # display_layout.addWidget(self.bold_checkbox)
+        # display_layout.addWidget(self.italic_checkbox)
+        
 
         button_layout = QtWidgets.QHBoxLayout()
         save_button = QtWidgets.QPushButton("Save")
