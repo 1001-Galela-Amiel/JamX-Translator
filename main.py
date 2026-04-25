@@ -1488,30 +1488,34 @@ class MainWindow(QtWidgets.QWidget):
             self.status.setText(f"Failed to save translations: {e}")
 
     def load_translations(self) -> None:
-        TRANSLATION_FILE, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                "Open File",                      # Dialog title
-                "",                 # Default filename
-                "JSON Files (*.json);;All Files (*)"  # File type filter
-            )
-        if TRANSLATION_FILE:
-            with open(TRANSLATION_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
+        try:
+            TRANSLATION_FILE, _ = QtWidgets.QFileDialog.getOpenFileName(
+                    self,
+                    "Open File",                      # Dialog title
+                    "",                 # Default filename
+                    "JSON Files (*.json);;All Files (*)"  # File type filter
+                )
+            if TRANSLATION_FILE:
+                with open(TRANSLATION_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
 
-            self.table.setRowCount(0)
-            self.translation_cache = {}
-        
-            for source_text, translation in data.items():
-                src_lang = self.src_combo.currentData()
-                dst_lang = self.dst_combo.currentData()
-                # Instantiate translation cache with compound key
-                key = f"{src_lang}|{dst_lang}|{source_text}"
-                self.translation_cache[key] = translation
-                row = self.table.rowCount()
-                self.table.insertRow(row)
-                self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(source_text))
-                self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(translation))
-
+                self.table.setRowCount(0)
+                self.translation_cache = {}
+            
+                for source_text, translation in data.items():
+                    src_lang = self.src_combo.currentData()
+                    dst_lang = self.dst_combo.currentData()
+                    # Instantiate translation cache with compound key
+                    key = f"{src_lang}|{dst_lang}|{source_text}"
+                    self.translation_cache[key] = translation
+                    row = self.table.rowCount()
+                    self.table.insertRow(row)
+                    self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(source_text))
+                    self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(translation))
+        except KeyError as e:
+            self.status.setText(f"Invalid key: {e}")
+        except Exception as e:
+            self.status.setText(f"Failed to load translation: {e}")
     # Whenever new information is added to the table, add to translationc cache
     def on_cell_changed(self, row: int, col: int) -> None:
         source_item = self.table.item(row, 0)
