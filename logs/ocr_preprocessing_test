@@ -1,3 +1,4 @@
+#Johnnie's test
 class TestOCRPreprocessing(unittest.TestCase):
 
     def test_rgb_input_is_converted_to_bgr(self):
