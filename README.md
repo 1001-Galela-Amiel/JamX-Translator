@@ -42,7 +42,7 @@ Contains TTS(text to speech) API key
 ```
 
 ## Directory Structure
-
+```text
 Jam-X Translator/
 ├── README.md (this file)
 ├── app/
@@ -62,7 +62,7 @@ Jam-X Translator/
 │   └── website/
 │       └── html/css/js files
 └── requirements.txt
-
+```
 ## Limitations
 1.Some games may restrict memory hooking or window capture functionality.
 2.Real-time translation speed may vary depending on system performance and internet connection.
