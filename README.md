@@ -80,11 +80,11 @@ Jam-X Translator/
 7. Add user translation sharing and community translation features.
 
 # Contributors
-### [Johnnie](https://github.com/johnniemorrisSC)
+[Johnnie](https://github.com/johnniemorrisSC)
 
-### [Mary-Ann](https://github.com/1107-Mary-Ann-Affo)
+[Mary-Ann](https://github.com/1107-Mary-Ann-Affo)
 
-### [Brent](https://github.com/1001-Galela-Amiel)
+[Brent](https://github.com/1001-Galela-Amiel)
 
 # Project Website
 [JamX Translator](https://1107-mary-ann-affo.github.io/jamxweb-translator/index.html)
