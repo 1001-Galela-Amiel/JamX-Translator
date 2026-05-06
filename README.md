@@ -1,7 +1,7 @@
-## Jam-X Translator
+# Jam-X Translator
 JamX is a software tool designed to let users translate computer games, allowing in-game text to be edited from one language to another and shared with others.
 
-# Key Feature: 
+## Key Feature: 
 Supports 30+ languages, helping make games accessible to players regardless of language barriers. It also includes interactive font customization features and text-to-speech functionality to improve accessibility and user experience.
 
 # Overview
@@ -35,8 +35,8 @@ This tool provides:
 7. Start OCR and translation to view translated in-game text in real time.
 8. Optionally enable text-to-speech (TTS) for audio output.
    
-## Configuration
-# .env file
+# Configuration
+## .env file
 ```bash
 Contains TTS(text to speech) API key
 ```
@@ -79,10 +79,12 @@ Jam-X Translator/
 6. Improve real-time processing speed and optimization.
 7. Add user translation sharing and community translation features.
 
-## Contributors
-[Johnnie](https://github.com/johnniemorrisSC)
-[Mary-Ann](https://github.com/1107-Mary-Ann-Affo)
-[Brent](https://github.com/1001-Galela-Amiel)
+# Contributors
+### [Johnnie](https://github.com/johnniemorrisSC)
 
-## Project Website
+### [Mary-Ann](https://github.com/1107-Mary-Ann-Affo)
+
+### [Brent](https://github.com/1001-Galela-Amiel)
+
+# Project Website
 [JamX Translator](https://1107-mary-ann-affo.github.io/jamxweb-translator/index.html)
