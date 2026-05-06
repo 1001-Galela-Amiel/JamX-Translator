@@ -13,6 +13,23 @@ This tool provides:
 5. Text-to-Speech (TTS) – Converts translated text into speech for accessibility and hands-free interaction
 6. Interactive Display Features – Includes customizable fonts, overlays, and translation display settings for improved user experience
 
+
+```md
+## Sytem Architecture Overview
+
+```text
+Game Window
+   ↓
+Screen Capture
+   ↓
+OCR / Text Hooking
+   ↓
+Translation Engine
+   ↓
+Overlay + Text-to-Speech
+   ↓
+User
+
 # Usage
 1. Clone and setup
    ```bash
