@@ -65,9 +65,13 @@ Jam-X Translator/
 ```
 ## Limitations
 1.Some games may restrict memory hooking or window capture functionality.
+
 2.Real-time translation speed may vary depending on system performance and internet connection.
+
 3.Certain languages may produce less accurate translations than others.
+
 4.Text overlapping or fast-moving subtitles can reduce detection accuracy.
+
 5.Performance may decrease when running high-resource games alongside the application.
 
 ## Future Improvements
