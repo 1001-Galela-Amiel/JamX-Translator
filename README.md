@@ -14,7 +14,6 @@ This tool provides:
 6. Interactive Display Features – Includes customizable fonts, overlays, and translation display settings for improved user experience
 
 
-```md
 ## Sytem Architecture Overview
 
 ```text
@@ -29,6 +28,7 @@ Translation Engine
 Overlay + Text-to-Speech
    ↓
 User
+```
 
 # Usage
 1. Clone and setup
