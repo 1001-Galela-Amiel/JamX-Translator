@@ -1,4 +1,4 @@
-# Jam-X Translator
+# JamX Translator
 JamX is a software tool designed to let users translate computer games, allowing in-game text to be edited from one language to another and shared with others.
 
 ## Key Feature: 
