@@ -18,15 +18,15 @@ This tool provides:
 
 ```text
 Game Window
-   ↓
+   |
 Screen Capture
-   ↓
+   |
 OCR / Text Hooking
-   ↓
+   |
 Translation Engine
-   ↓
+   |
 Overlay + Text-to-Speech
-   ↓
+   |
 User
 ```
 
