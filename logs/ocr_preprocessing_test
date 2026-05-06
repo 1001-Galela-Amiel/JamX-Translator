@@ -1,0 +1,36 @@
+class TestOCRPreprocessing(unittest.TestCase):
+
+    def test_rgb_input_is_converted_to_bgr(self):
+
+        class FakeEngine:
+
+            def __init__(self):
+                self.last_img = None
+
+            def __call__(self, img):
+                self.last_img = img
+                return [], None
+
+        fake_engine = FakeEngine()
+
+        original = ocr_backend._ocr_engine
+        ocr_backend._ocr_engine = fake_engine
+
+        try:
+            rgb_pixel = np.array([[[255, 0, 0]]], dtype=np.uint8)
+
+            ocr_backend.ocr_image_data(rgb_pixel)
+
+            self.assertIsNotNone(fake_engine.last_img)
+
+            self.assertEqual(
+                tuple(fake_engine.last_img[0, 0]),
+                (0, 0, 255)
+            )
+
+        finally:
+            ocr_backend._ocr_engine = original
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
